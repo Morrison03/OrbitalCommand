@@ -23,11 +23,10 @@ import com.example.orbitalcommand.viewmodel.OrbitalViewModel
 import java.util.Locale
 
 /**
- * Connects the mission-control ViewModel to the
- * dashboard's composable interface.
+ * Connects the mission-control ViewModel to the dashboard.
  *
- * Collects the latest observable state in a
- * lifecycle-aware manner.
+ * Collects observable application state in a lifecycle-aware
+ * manner and forwards operator actions to the ViewModel.
  */
 @Composable
 fun OrbitalRoute(
@@ -44,7 +43,7 @@ fun OrbitalRoute(
 }
 
 /**
- * Displays mission information and operator controls.
+ * Displays the mission-control interface.
  *
  * Uses a vertical layout on narrow screens and a
  * two-column layout on wider tablet displays.
@@ -101,6 +100,8 @@ fun OrbitalDashboard(
 
                         TelemetryPanel(state)
 
+                        TelemetryHistoryPanel(state)
+
                         SimulationControls(
                             state = state,
                             onToggleConnection = onToggleConnection,
@@ -114,6 +115,8 @@ fun OrbitalDashboard(
                 OrbitPanel(state)
 
                 TelemetryPanel(state)
+
+                TelemetryHistoryPanel(state)
 
                 SystemHealthPanel(state)
 
@@ -129,7 +132,7 @@ fun OrbitalDashboard(
 
 /**
  * Displays the application title, satellite identifier,
- * and current connection status.
+ * and communication status.
  */
 @Composable
 private fun DashboardHeader(state: OrbitalUiState) {
@@ -185,8 +188,8 @@ private fun DashboardHeader(state: OrbitalUiState) {
 }
 
 /**
- * Displays the most recently received satellite position
- * in a stylized orbital diagram.
+ * Displays the latest received satellite position
+ * in a stylized orbital visualization.
  */
 @Composable
 private fun OrbitPanel(state: OrbitalUiState) {
@@ -219,10 +222,10 @@ private fun OrbitPanel(state: OrbitalUiState) {
 }
 
 /**
- * Displays the latest received satellite measurements.
+ * Displays the most recently received telemetry measurements.
  *
- * During communication loss, the last known readings
- * remain visible and are identified as stale.
+ * Readings remain visible during communication loss and are
+ * identified as stale until the connection is restored.
  */
 @Composable
 private fun TelemetryPanel(state: OrbitalUiState) {
@@ -306,8 +309,25 @@ private fun TelemetryPanel(state: OrbitalUiState) {
 }
 
 /**
- * Displays the reported health of monitored
- * satellite subsystems.
+ * Displays a selectable chart of received telemetry.
+ *
+ * History comes directly from observable dashboard state.
+ * Chart selection is handled by the chart component.
+ */
+@Composable
+private fun TelemetryHistoryPanel(state: OrbitalUiState) {
+
+    DashboardPanel(title = "TELEMETRY HISTORY") {
+
+        TelemetryHistoryChart(
+            history = state.history,
+            isLinkLost = state.linkLost
+        )
+    }
+}
+
+/**
+ * Displays the health of the monitored satellite subsystems.
  */
 @Composable
 private fun SystemHealthPanel(state: OrbitalUiState) {
@@ -350,8 +370,7 @@ private fun SystemHealthPanel(state: OrbitalUiState) {
 }
 
 /**
- * Provides operator controls for changing the simulated
- * communication state and resetting the simulator.
+ * Provides operator controls for the local simulation.
  */
 @Composable
 private fun SimulationControls(
@@ -393,7 +412,7 @@ private fun SimulationControls(
 }
 
 /**
- * Reusable container for dashboard sections.
+ * Provides a reusable visual container for dashboard sections.
  */
 @Composable
 private fun DashboardPanel(
@@ -429,7 +448,7 @@ private fun DashboardPanel(
 }
 
 /**
- * Reusable card displaying a formatted telemetry reading.
+ * Displays a formatted telemetry measurement.
  */
 @Composable
 private fun TelemetryCard(
@@ -467,7 +486,7 @@ private fun TelemetryCard(
 }
 
 /**
- * Reusable status indicator for a satellite subsystem.
+ * Displays a subsystem's current health status.
  */
 @Composable
 private fun StatusRow(
@@ -499,4 +518,3 @@ private fun StatusRow(
         )
     }
 }
-

@@ -1,4 +1,5 @@
 
+
 package com.example.orbitalcommand.model
 
 /**
@@ -19,18 +20,19 @@ data class SatelliteTelemetry(
 /**
  * Represents the observable state of the mission dashboard.
  *
- * The interface uses this state to render telemetry,
- * connection status, and simulation time.
+ * The interface uses this state to display current telemetry,
+ * historical measurements, and communication status.
  */
 data class OrbitalUiState(
     val elapsedSeconds: Int,
     val telemetry: SatelliteTelemetry,
-    val linkLost: Boolean = false
+    val linkLost: Boolean = false,
+    val history: List<SatelliteTelemetry> = listOf(telemetry)
 ) {
 
     /**
-     * Returns the age of the most recently received
-     * telemetry packet in simulated seconds.
+     * Returns the number of simulation seconds since the
+     * most recently received telemetry packet.
      */
     val packetAgeSeconds: Int
         get() = (elapsedSeconds - telemetry.sampleSecond)
