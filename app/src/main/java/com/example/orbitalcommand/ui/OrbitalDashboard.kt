@@ -2,6 +2,7 @@
 package com.example.orbitalcommand.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -18,15 +19,15 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.orbitalcommand.model.OrbitalUiState
+import com.example.orbitalcommand.model.SatelliteFault
+import com.example.orbitalcommand.model.SatelliteState
 import com.example.orbitalcommand.ui.theme.OrbitalColors
 import com.example.orbitalcommand.viewmodel.OrbitalViewModel
 import java.util.Locale
 
 /**
- * Connects the mission-control ViewModel to the dashboard.
- *
- * Collects observable application state in a lifecycle-aware
- * manner and forwards operator actions to the ViewModel.
+ * Connects observable fleet state and operator actions
+ * to the mission-control dashboard.
  */
 @Composable
 fun OrbitalRoute(
@@ -37,21 +38,26 @@ fun OrbitalRoute(
 
     OrbitalDashboard(
         state = state,
-        onToggleConnection = viewModel::toggleConnection,
+        onSelectSatellite = viewModel::selectSatellite,
+        onSetFault = viewModel::setFault,
+        onClearFault = viewModel::clearFault,
         onReset = viewModel::resetSimulation
     )
 }
 
 /**
- * Displays the mission-control interface.
+ * Displays telemetry and operational controls for a
+ * fleet of simulated spacecraft.
  *
- * Uses a vertical layout on narrow screens and a
- * two-column layout on wider tablet displays.
+ * The selected spacecraft determines which measurements
+ * and historical charts appear in the detail panels.
  */
 @Composable
 fun OrbitalDashboard(
     state: OrbitalUiState,
-    onToggleConnection: () -> Unit,
+    onSelectSatellite: (String) -> Unit,
+    onSetFault: (SatelliteFault) -> Unit,
+    onClearFault: () -> Unit,
     onReset: () -> Unit
 ) {
 
@@ -61,7 +67,8 @@ fun OrbitalDashboard(
             .background(OrbitalColors.Background)
     ) {
 
-        val useTabletLayout = maxWidth >= 700.dp
+        val tabletLayout = maxWidth >= 700.dp
+        val selected = state.selectedSatellite
 
         Column(
             modifier = Modifier
@@ -73,7 +80,12 @@ fun OrbitalDashboard(
 
             DashboardHeader(state)
 
-            if (useTabletLayout) {
+            SatelliteSelector(
+                state = state,
+                onSelectSatellite = onSelectSatellite
+            )
+
+            if (tabletLayout) {
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -89,7 +101,9 @@ fun OrbitalDashboard(
 
                         OrbitPanel(state)
 
-                        SystemHealthPanel(state)
+                        FleetOverview(state)
+
+                        SystemHealthPanel(selected)
                     }
 
                     Column(
@@ -98,13 +112,18 @@ fun OrbitalDashboard(
                             Arrangement.spacedBy(16.dp)
                     ) {
 
-                        TelemetryPanel(state)
+                        TelemetryPanel(
+                            satellite = selected,
+                            elapsedSeconds = state.elapsedSeconds
+                        )
 
-                        TelemetryHistoryPanel(state)
+                        TelemetryHistoryPanel(selected)
 
-                        SimulationControls(
-                            state = state,
-                            onToggleConnection = onToggleConnection,
+                        FaultControlPanel(
+                            satellite = selected,
+                            elapsedSeconds = state.elapsedSeconds,
+                            onSetFault = onSetFault,
+                            onClearFault = onClearFault,
                             onReset = onReset
                         )
                     }
@@ -114,15 +133,22 @@ fun OrbitalDashboard(
 
                 OrbitPanel(state)
 
-                TelemetryPanel(state)
+                FleetOverview(state)
 
-                TelemetryHistoryPanel(state)
+                TelemetryPanel(
+                    satellite = selected,
+                    elapsedSeconds = state.elapsedSeconds
+                )
 
-                SystemHealthPanel(state)
+                TelemetryHistoryPanel(selected)
 
-                SimulationControls(
-                    state = state,
-                    onToggleConnection = onToggleConnection,
+                SystemHealthPanel(selected)
+
+                FaultControlPanel(
+                    satellite = selected,
+                    elapsedSeconds = state.elapsedSeconds,
+                    onSetFault = onSetFault,
+                    onClearFault = onClearFault,
                     onReset = onReset
                 )
             }
@@ -131,8 +157,8 @@ fun OrbitalDashboard(
 }
 
 /**
- * Displays the application title, satellite identifier,
- * and communication status.
+ * Displays mission identification, fleet size, and
+ * the number of spacecraft reporting faults.
  */
 @Composable
 private fun DashboardHeader(state: OrbitalUiState) {
@@ -149,7 +175,7 @@ private fun DashboardHeader(state: OrbitalUiState) {
         )
 
         Text(
-            text = "SATELLITE OPERATIONS • SIMULATION",
+            text = "SATELLITE FLEET OPERATIONS • SIMULATION",
             color = OrbitalColors.Muted,
             fontSize = 12.sp
         )
@@ -160,26 +186,27 @@ private fun DashboardHeader(state: OrbitalUiState) {
 
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            horizontalArrangement =
+                Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
 
             Text(
-                text = "SAT-001",
+                text = "${state.satellites.size} SATELLITES",
                 color = Color.White,
-                fontSize = 20.sp,
+                fontSize = 15.sp,
                 fontWeight = FontWeight.SemiBold
             )
 
             Text(
-                text = if (state.linkLost)
-                    "SIGNAL LOST"
+                text = if (state.faultCount == 0)
+                    "FLEET NOMINAL"
                 else
-                    "SYSTEM ONLINE",
-                color = if (state.linkLost)
-                    OrbitalColors.Warning
+                    "${state.faultCount} ACTIVE FAULT(S)",
+                color = if (state.faultCount == 0)
+                    OrbitalColors.Healthy
                 else
-                    OrbitalColors.Healthy,
+                    OrbitalColors.Warning,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold
             )
@@ -188,33 +215,88 @@ private fun DashboardHeader(state: OrbitalUiState) {
 }
 
 /**
- * Displays the latest received satellite position
- * in a stylized orbital visualization.
+ * Allows operators to switch between monitored satellites.
+ *
+ * Faulted spacecraft remain visibly identified even
+ * when another satellite is selected.
+ */
+@Composable
+private fun SatelliteSelector(
+    state: OrbitalUiState,
+    onSelectSatellite: (String) -> Unit
+) {
+
+    DashboardPanel(title = "SELECT SATELLITE") {
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+
+            state.satellites.forEach { satellite ->
+
+                FilterChip(
+                    selected =
+                        state.selectedSatelliteId ==
+                                satellite.definition.id,
+                    onClick = {
+                        onSelectSatellite(satellite.definition.id)
+                    },
+                    label = {
+
+                        Text(
+                            text = satellite.definition.id +
+                                    if (satellite.hasFault)
+                                        " • ALERT"
+                                    else
+                                        ""
+                        )
+                    }
+                )
+            }
+        }
+
+        Text(
+            text = state.selectedSatellite.definition.name,
+            color = OrbitalColors.Muted,
+            fontSize = 13.sp
+        )
+    }
+}
+
+/**
+ * Displays every satellite on the orbital diagram.
  */
 @Composable
 private fun OrbitPanel(state: OrbitalUiState) {
 
-    DashboardPanel(title = "ORBITAL TRACKING") {
+    DashboardPanel(title = "ORBITAL FLEET TRACKING") {
 
         OrbitVisualization(
-            angleDegrees = state.telemetry.orbitAngleDegrees
+            satellites = state.satellites,
+            selectedSatelliteId = state.selectedSatelliteId
         )
 
         Text(
-            text = if (state.linkLost)
-                "LAST KNOWN SATELLITE POSITION"
-            else
-                "RECEIVING SATELLITE POSITION",
-            color = if (state.linkLost)
-                OrbitalColors.Warning
-            else
-                OrbitalColors.Accent,
-            fontSize = 12.sp,
+            text = "Selected: ${state.selectedSatelliteId}",
+            color = OrbitalColors.Accent,
+            fontSize = 13.sp,
             fontWeight = FontWeight.SemiBold
         )
 
+        if (!state.selectedSatellite.isConnected) {
+
+            Text(
+                text = "Showing last known spacecraft position.",
+                color = OrbitalColors.Warning,
+                fontSize = 12.sp
+            )
+        }
+
         Text(
-            text = "Accelerated orbit illustration • Not to scale",
+            text = "Accelerated orbital illustration • Not to scale",
             color = OrbitalColors.Muted,
             fontSize = 11.sp
         )
@@ -222,22 +304,48 @@ private fun OrbitPanel(state: OrbitalUiState) {
 }
 
 /**
- * Displays the most recently received telemetry measurements.
- *
- * Readings remain visible during communication loss and are
- * identified as stale until the connection is restored.
+ * Summarizes the health of all monitored spacecraft.
  */
 @Composable
-private fun TelemetryPanel(state: OrbitalUiState) {
+private fun FleetOverview(state: OrbitalUiState) {
 
-    val telemetry = state.telemetry
+    DashboardPanel(title = "FLEET STATUS") {
 
-    DashboardPanel(title = "SATELLITE TELEMETRY") {
+        state.satellites.forEach { satellite ->
 
-        if (state.linkLost) {
+            StatusRow(
+                label = satellite.definition.id,
+                status = if (satellite.hasFault)
+                    satellite.fault.displayName.uppercase()
+                else
+                    "NOMINAL",
+                warning = satellite.hasFault
+            )
+        }
+    }
+}
+
+/**
+ * Displays the latest telemetry received from
+ * the selected satellite.
+ */
+@Composable
+private fun TelemetryPanel(
+    satellite: SatelliteState,
+    elapsedSeconds: Int
+) {
+
+    val telemetry = satellite.telemetry
+
+    DashboardPanel(
+        title = "${satellite.definition.id} TELEMETRY"
+    ) {
+
+        if (!satellite.isConnected) {
 
             Text(
-                text = "WARNING: Showing last received measurements",
+                text = "COMMUNICATION LOST — " +
+                        "Displaying last received measurements.",
                 color = OrbitalColors.Warning,
                 fontSize = 12.sp
             )
@@ -294,104 +402,191 @@ private fun TelemetryPanel(state: OrbitalUiState) {
         }
 
         Text(
-            text = "Last telemetry: " +
-                    if (state.packetAgeSeconds == 0)
-                        "Just now"
-                    else
-                        "${state.packetAgeSeconds} seconds ago",
-            color = if (state.linkLost)
-                OrbitalColors.Warning
+            text = "Last telemetry received: " +
+                    "${satellite.packetAgeSeconds(elapsedSeconds)} " +
+                    "second(s) ago",
+            color = if (satellite.isConnected)
+                OrbitalColors.Muted
             else
-                OrbitalColors.Muted,
+                OrbitalColors.Warning,
             fontSize = 12.sp
         )
     }
 }
 
 /**
- * Displays a selectable chart of received telemetry.
- *
- * History comes directly from observable dashboard state.
- * Chart selection is handled by the chart component.
+ * Displays the independent telemetry history of
+ * the currently selected satellite.
  */
 @Composable
-private fun TelemetryHistoryPanel(state: OrbitalUiState) {
+private fun TelemetryHistoryPanel(
+    satellite: SatelliteState
+) {
 
     DashboardPanel(title = "TELEMETRY HISTORY") {
 
         TelemetryHistoryChart(
-            history = state.history,
-            isLinkLost = state.linkLost
+            history = satellite.history,
+            isLinkLost = !satellite.isConnected
         )
     }
 }
 
 /**
- * Displays the health of the monitored satellite subsystems.
+ * Displays subsystem health for the selected spacecraft.
+ *
+ * When communications are unavailable, subsystem health
+ * is marked as unverified rather than assuming normal
+ * operation from old telemetry.
  */
 @Composable
-private fun SystemHealthPanel(state: OrbitalUiState) {
+private fun SystemHealthPanel(
+    satellite: SatelliteState
+) {
 
-    val lowBattery =
-        state.telemetry.batteryPercent < 15.0
+    val fault = satellite.fault
+    val telemetry = satellite.telemetry
 
-    val highTemperature =
-        state.telemetry.temperatureC > 40.0
+    DashboardPanel(title = "SYSTEM DIAGNOSTICS") {
 
-    DashboardPanel(title = "SYSTEM HEALTH") {
+        if (!satellite.isConnected) {
 
-        StatusRow(
-            label = "Power subsystem",
-            status = if (lowBattery)
-                "LOW POWER"
-            else
-                "NOMINAL",
-            warning = lowBattery
-        )
+            StatusRow(
+                label = "Power subsystem",
+                status = "UNVERIFIED",
+                warning = true
+            )
 
-        StatusRow(
-            label = "Thermal subsystem",
-            status = if (highTemperature)
-                "WARNING"
-            else
-                "NOMINAL",
-            warning = highTemperature
-        )
+            StatusRow(
+                label = "Thermal subsystem",
+                status = "UNVERIFIED",
+                warning = true
+            )
+
+            StatusRow(
+                label = "Payload",
+                status = "UNVERIFIED",
+                warning = true
+            )
+
+        } else {
+
+            val powerWarning =
+                fault == SatelliteFault.POWER_DRAIN ||
+                        telemetry.batteryPercent < 15.0
+
+            val thermalWarning =
+                fault == SatelliteFault.THERMAL_OVERLOAD ||
+                        telemetry.temperatureC > 40.0
+
+            val payloadWarning =
+                fault == SatelliteFault.PAYLOAD_FAILURE
+
+            StatusRow(
+                label = "Power subsystem",
+                status = if (powerWarning)
+                    "WARNING"
+                else
+                    "NOMINAL",
+                warning = powerWarning
+            )
+
+            StatusRow(
+                label = "Thermal subsystem",
+                status = if (thermalWarning)
+                    "WARNING"
+                else
+                    "NOMINAL",
+                warning = thermalWarning
+            )
+
+            StatusRow(
+                label = "Payload",
+                status = if (payloadWarning)
+                    "FAILED"
+                else
+                    "NOMINAL",
+                warning = payloadWarning
+            )
+        }
 
         StatusRow(
             label = "Communications",
-            status = if (state.linkLost)
-                "OFFLINE"
+            status = if (satellite.isConnected)
+                "ONLINE"
             else
-                "ONLINE",
-            warning = state.linkLost
+                "OFFLINE",
+            warning = !satellite.isConnected
         )
     }
 }
 
 /**
- * Provides operator controls for the local simulation.
+ * Provides controls for injecting simulated faults,
+ * clearing faults, and resetting the entire fleet.
  */
 @Composable
-private fun SimulationControls(
-    state: OrbitalUiState,
-    onToggleConnection: () -> Unit,
+private fun FaultControlPanel(
+    satellite: SatelliteState,
+    elapsedSeconds: Int,
+    onSetFault: (SatelliteFault) -> Unit,
+    onClearFault: () -> Unit,
     onReset: () -> Unit
 ) {
 
-    DashboardPanel(title = "SIMULATION CONTROLS") {
+    DashboardPanel(title = "FAULT SIMULATION") {
 
-        Button(
-            onClick = onToggleConnection,
+        Text(
+            text = "Target: ${satellite.definition.id}",
+            color = OrbitalColors.Muted,
+            fontSize = 12.sp
+        )
+
+        Text(
+            text = "Select a fault to simulate:",
+            color = Color.White,
+            fontSize = 13.sp
+        )
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+
+            SatelliteFault.entries
+                .filter { it != SatelliteFault.NONE }
+                .forEach { fault ->
+
+                    FilterChip(
+                        selected = satellite.fault == fault,
+                        onClick = {
+                            onSetFault(fault)
+                        },
+                        label = {
+                            Text(fault.displayName)
+                        }
+                    )
+                }
+        }
+
+        Text(
+            text = satellite.fault.description,
+            color = if (satellite.hasFault)
+                OrbitalColors.Warning
+            else
+                OrbitalColors.Muted,
+            fontSize = 12.sp
+        )
+
+        OutlinedButton(
+            onClick = onClearFault,
+            enabled = satellite.hasFault,
             modifier = Modifier.fillMaxWidth()
         ) {
 
-            Text(
-                text = if (state.linkLost)
-                    "Restore Connection"
-                else
-                    "Simulate Communication Failure"
-            )
+            Text("Clear Selected Satellite Fault")
         }
 
         OutlinedButton(
@@ -399,12 +594,11 @@ private fun SimulationControls(
             modifier = Modifier.fillMaxWidth()
         ) {
 
-            Text("Reset Simulation")
+            Text("Reset Entire Simulation")
         }
 
         Text(
-            text = "Mission elapsed time: " +
-                    "${state.elapsedSeconds} seconds",
+            text = "Mission elapsed time: $elapsedSeconds seconds",
             color = OrbitalColors.Muted,
             fontSize = 12.sp
         )
@@ -412,7 +606,7 @@ private fun SimulationControls(
 }
 
 /**
- * Provides a reusable visual container for dashboard sections.
+ * Reusable visual container for dashboard sections.
  */
 @Composable
 private fun DashboardPanel(
@@ -486,7 +680,7 @@ private fun TelemetryCard(
 }
 
 /**
- * Displays a subsystem's current health status.
+ * Displays the condition of a satellite or subsystem.
  */
 @Composable
 private fun StatusRow(
@@ -504,8 +698,11 @@ private fun StatusRow(
         Text(
             text = label,
             color = Color.White,
-            fontSize = 14.sp
+            fontSize = 13.sp,
+            modifier = Modifier.weight(1f)
         )
+
+        Spacer(modifier = Modifier.width(8.dp))
 
         Text(
             text = status,
@@ -513,7 +710,7 @@ private fun StatusRow(
                 OrbitalColors.Warning
             else
                 OrbitalColors.Healthy,
-            fontSize = 12.sp,
+            fontSize = 11.sp,
             fontWeight = FontWeight.Bold
         )
     }
