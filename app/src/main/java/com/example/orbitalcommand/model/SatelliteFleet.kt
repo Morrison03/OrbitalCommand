@@ -41,8 +41,8 @@ enum class SatelliteFault(
 /**
  * Defines the permanent configuration of a satellite.
  *
- * Orbital visualization distances maintain the relative
- * ordering of satellite altitudes but are not to scale.
+ * Visualization radii preserve the relative altitude
+ * ordering of spacecraft but are not physically to scale.
  */
 data class SatelliteDefinition(
     val id: String,
@@ -55,11 +55,7 @@ data class SatelliteDefinition(
 )
 
 /**
- * Contains the simulated spacecraft monitored by
- * the mission-control application.
- *
- * Satellites are ordered by identifier for selection.
- * Their orbital radii correspond to their relative altitudes.
+ * Defines the spacecraft included in the simulation.
  */
 object SatelliteCatalog {
 
@@ -98,10 +94,10 @@ object SatelliteCatalog {
 }
 
 /**
- * Represents the current operational state of a spacecraft.
+ * Represents the current state of an individual satellite.
  *
- * Each satellite maintains its own telemetry, faults,
- * and received telemetry history.
+ * Each spacecraft maintains its own telemetry, active
+ * fault, and historical measurements.
  */
 data class SatelliteState(
     val definition: SatelliteDefinition,
@@ -112,8 +108,7 @@ data class SatelliteState(
 ) {
 
     /**
-     * Indicates whether new telemetry packets can
-     * currently reach the mission-control dashboard.
+     * Indicates whether telemetry communication is available.
      */
     val isConnected: Boolean
         get() = fault != SatelliteFault.COMMUNICATION_LOSS
@@ -125,8 +120,7 @@ data class SatelliteState(
         get() = fault != SatelliteFault.NONE
 
     /**
-     * Returns the age of the most recently received
-     * telemetry packet in simulation seconds.
+     * Returns the age of the last received telemetry packet.
      */
     fun packetAgeSeconds(elapsedSeconds: Int): Int {
 
@@ -137,16 +131,16 @@ data class SatelliteState(
 }
 
 /**
- * Contains the complete observable state of the
- * satellite mission-control application.
+ * Represents the observable state of the mission dashboard.
  *
- * The selected satellite determines which telemetry,
- * diagnostics, and historical charts are displayed.
+ * Contains the complete satellite fleet, current selection,
+ * simulation clock, and recorded mission events.
  */
 data class OrbitalUiState(
     val elapsedSeconds: Int,
     val satellites: List<SatelliteState>,
-    val selectedSatelliteId: String
+    val selectedSatelliteId: String,
+    val events: List<MissionEvent> = emptyList()
 ) {
 
     /**
@@ -158,9 +152,23 @@ data class OrbitalUiState(
         }
 
     /**
-     * Returns the number of spacecraft reporting
-     * an active simulated fault.
+     * Counts spacecraft with an active simulated fault.
      */
     val faultCount: Int
         get() = satellites.count { it.hasFault }
+
+    /**
+     * Returns all unresolved mission alerts.
+     */
+    val activeAlerts: List<MissionEvent>
+        get() = events.filter { it.isActive }
+
+    /**
+     * Counts unresolved alerts that an operator
+     * has not yet acknowledged.
+     */
+    val unacknowledgedAlertCount: Int
+        get() = activeAlerts.count {
+            !it.isAcknowledged
+        }
 }

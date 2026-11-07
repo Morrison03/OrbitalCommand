@@ -26,8 +26,8 @@ import com.example.orbitalcommand.viewmodel.OrbitalViewModel
 import java.util.Locale
 
 /**
- * Connects observable fleet state and operator actions
- * to the mission-control dashboard.
+ * Connects the ViewModel's observable state and
+ * operator actions to the mission dashboard.
  */
 @Composable
 fun OrbitalRoute(
@@ -41,16 +41,16 @@ fun OrbitalRoute(
         onSelectSatellite = viewModel::selectSatellite,
         onSetFault = viewModel::setFault,
         onClearFault = viewModel::clearFault,
+        onAcknowledgeAlert = viewModel::acknowledgeAlert,
         onReset = viewModel::resetSimulation
     )
 }
 
 /**
- * Displays telemetry and operational controls for a
- * fleet of simulated spacecraft.
+ * Displays fleet monitoring, mission alerts, telemetry,
+ * diagnostics, and simulation controls.
  *
- * The selected spacecraft determines which measurements
- * and historical charts appear in the detail panels.
+ * Layout adjusts according to available screen width.
  */
 @Composable
 fun OrbitalDashboard(
@@ -58,6 +58,7 @@ fun OrbitalDashboard(
     onSelectSatellite: (String) -> Unit,
     onSetFault: (SatelliteFault) -> Unit,
     onClearFault: () -> Unit,
+    onAcknowledgeAlert: (Long) -> Unit,
     onReset: () -> Unit
 ) {
 
@@ -85,6 +86,14 @@ fun OrbitalDashboard(
                 onSelectSatellite = onSelectSatellite
             )
 
+            // Fleet-wide alerts remain visible regardless
+            // of which satellite is selected.
+            MissionAlertsPanel(
+                alerts = state.activeAlerts,
+                onSelectSatellite = onSelectSatellite,
+                onAcknowledgeAlert = onAcknowledgeAlert
+            )
+
             if (tabletLayout) {
 
                 Row(
@@ -103,7 +112,9 @@ fun OrbitalDashboard(
 
                         FleetOverview(state)
 
-                        SystemHealthPanel(selected)
+                        MissionEventHistoryPanel(
+                            events = state.events
+                        )
                     }
 
                     Column(
@@ -118,6 +129,8 @@ fun OrbitalDashboard(
                         )
 
                         TelemetryHistoryPanel(selected)
+
+                        SystemHealthPanel(selected)
 
                         FaultControlPanel(
                             satellite = selected,
@@ -151,17 +164,23 @@ fun OrbitalDashboard(
                     onClearFault = onClearFault,
                     onReset = onReset
                 )
+
+                MissionEventHistoryPanel(
+                    events = state.events
+                )
             }
         }
     }
 }
 
 /**
- * Displays mission identification, fleet size, and
- * the number of spacecraft reporting faults.
+ * Displays the mission title, fleet size,
+ * fault count, and pending acknowledgements.
  */
 @Composable
-private fun DashboardHeader(state: OrbitalUiState) {
+private fun DashboardHeader(
+    state: OrbitalUiState
+) {
 
     Column(
         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -186,8 +205,7 @@ private fun DashboardHeader(state: OrbitalUiState) {
 
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement =
-                Arrangement.SpaceBetween,
+            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
 
@@ -211,14 +229,23 @@ private fun DashboardHeader(state: OrbitalUiState) {
                 fontWeight = FontWeight.Bold
             )
         }
+
+        if (state.unacknowledgedAlertCount > 0) {
+
+            Text(
+                text = "${state.unacknowledgedAlertCount} " +
+                        "alert(s) require acknowledgement",
+                color = OrbitalColors.Warning,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
     }
 }
 
 /**
- * Allows operators to switch between monitored satellites.
- *
- * Faulted spacecraft remain visibly identified even
- * when another satellite is selected.
+ * Allows operators to select a spacecraft while
+ * identifying satellites with active faults.
  */
 @Composable
 private fun SatelliteSelector(
@@ -232,7 +259,8 @@ private fun SatelliteSelector(
             modifier = Modifier
                 .fillMaxWidth()
                 .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement =
+                Arrangement.spacedBy(8.dp)
         ) {
 
             state.satellites.forEach { satellite ->
@@ -242,7 +270,9 @@ private fun SatelliteSelector(
                         state.selectedSatelliteId ==
                                 satellite.definition.id,
                     onClick = {
-                        onSelectSatellite(satellite.definition.id)
+                        onSelectSatellite(
+                            satellite.definition.id
+                        )
                     },
                     label = {
 
@@ -267,7 +297,8 @@ private fun SatelliteSelector(
 }
 
 /**
- * Displays every satellite on the orbital diagram.
+ * Displays the simulated orbital positions
+ * of the monitored satellite fleet.
  */
 @Composable
 private fun OrbitPanel(state: OrbitalUiState) {
@@ -304,7 +335,8 @@ private fun OrbitPanel(state: OrbitalUiState) {
 }
 
 /**
- * Summarizes the health of all monitored spacecraft.
+ * Displays the current operational condition
+ * of every simulated spacecraft.
  */
 @Composable
 private fun FleetOverview(state: OrbitalUiState) {
@@ -326,8 +358,8 @@ private fun FleetOverview(state: OrbitalUiState) {
 }
 
 /**
- * Displays the latest telemetry received from
- * the selected satellite.
+ * Displays the most recently received measurements
+ * for the selected satellite.
  */
 @Composable
 private fun TelemetryPanel(
@@ -415,8 +447,8 @@ private fun TelemetryPanel(
 }
 
 /**
- * Displays the independent telemetry history of
- * the currently selected satellite.
+ * Displays historical measurements belonging
+ * to the currently selected spacecraft.
  */
 @Composable
 private fun TelemetryHistoryPanel(
@@ -433,11 +465,11 @@ private fun TelemetryHistoryPanel(
 }
 
 /**
- * Displays subsystem health for the selected spacecraft.
+ * Displays the current health of individual
+ * spacecraft subsystems.
  *
- * When communications are unavailable, subsystem health
- * is marked as unverified rather than assuming normal
- * operation from old telemetry.
+ * Subsystem health is unverified while communications
+ * are unavailable.
  */
 @Composable
 private fun SystemHealthPanel(
@@ -522,8 +554,8 @@ private fun SystemHealthPanel(
 }
 
 /**
- * Provides controls for injecting simulated faults,
- * clearing faults, and resetting the entire fleet.
+ * Provides controls for injecting or clearing
+ * simulated spacecraft faults.
  */
 @Composable
 private fun FaultControlPanel(
@@ -552,11 +584,14 @@ private fun FaultControlPanel(
             modifier = Modifier
                 .fillMaxWidth()
                 .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement =
+                Arrangement.spacedBy(8.dp)
         ) {
 
             SatelliteFault.entries
-                .filter { it != SatelliteFault.NONE }
+                .filter {
+                    it != SatelliteFault.NONE
+                }
                 .forEach { fault ->
 
                     FilterChip(
@@ -606,7 +641,8 @@ private fun FaultControlPanel(
 }
 
 /**
- * Reusable visual container for dashboard sections.
+ * Provides a consistent container for
+ * mission dashboard sections.
  */
 @Composable
 private fun DashboardPanel(
@@ -626,7 +662,8 @@ private fun DashboardPanel(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement =
+                Arrangement.spacedBy(12.dp)
         ) {
 
             Text(
@@ -642,7 +679,7 @@ private fun DashboardPanel(
 }
 
 /**
- * Displays a formatted telemetry measurement.
+ * Displays a formatted satellite telemetry measurement.
  */
 @Composable
 private fun TelemetryCard(
@@ -680,7 +717,7 @@ private fun TelemetryCard(
 }
 
 /**
- * Displays the condition of a satellite or subsystem.
+ * Displays an operational status or diagnostic result.
  */
 @Composable
 private fun StatusRow(
@@ -702,7 +739,9 @@ private fun StatusRow(
             modifier = Modifier.weight(1f)
         )
 
-        Spacer(modifier = Modifier.width(8.dp))
+        Spacer(
+            modifier = Modifier.width(8.dp)
+        )
 
         Text(
             text = status,
