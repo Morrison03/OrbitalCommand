@@ -3,9 +3,6 @@ package com.example.orbitalcommand.model
 
 /**
  * Defines the faults supported by the satellite simulator.
- *
- * Faults affect simulated spacecraft behavior and provide
- * operators with diagnostic scenarios to investigate.
  */
 enum class SatelliteFault(
     val displayName: String,
@@ -39,10 +36,10 @@ enum class SatelliteFault(
 }
 
 /**
- * Defines the permanent configuration of a satellite.
+ * Defines the configuration of a simulated satellite.
  *
- * Visualization radii preserve the relative altitude
- * ordering of spacecraft but are not physically to scale.
+ * Orbital visualization radii preserve the relative
+ * ordering of satellite altitudes but are not to scale.
  */
 data class SatelliteDefinition(
     val id: String,
@@ -55,7 +52,7 @@ data class SatelliteDefinition(
 )
 
 /**
- * Defines the spacecraft included in the simulation.
+ * Contains the satellites monitored by Orbital Command.
  */
 object SatelliteCatalog {
 
@@ -94,30 +91,46 @@ object SatelliteCatalog {
 }
 
 /**
- * Represents the current state of an individual satellite.
+ * Represents the operating state of an individual satellite.
  *
- * Each spacecraft maintains its own telemetry, active
- * fault, and historical measurements.
+ * telemetry contains the last packet received by the
+ * ground interface.
+ *
+ * onboardTelemetry contains the internally calculated
+ * simulation state, including during communication loss.
  */
 data class SatelliteState(
     val definition: SatelliteDefinition,
     val telemetry: SatelliteTelemetry,
     val fault: SatelliteFault = SatelliteFault.NONE,
     val faultStartedSecond: Int? = null,
-    val history: List<SatelliteTelemetry> = listOf(telemetry)
+    val history: List<SatelliteTelemetry> = listOf(telemetry),
+    val onboardTelemetry: SatelliteTelemetry = telemetry
 ) {
 
     /**
-     * Indicates whether telemetry communication is available.
+     * Indicates whether the satellite is capable of
+     * delivering a new telemetry packet.
+     *
+     * Both communications failures and complete power
+     * depletion prevent telemetry reception.
      */
     val isConnected: Boolean
-        get() = fault != SatelliteFault.COMMUNICATION_LOSS
+        get() = fault != SatelliteFault.COMMUNICATION_LOSS &&
+                onboardTelemetry.powerMode != PowerMode.OFFLINE
 
     /**
-     * Indicates whether a simulated fault is active.
+     * Indicates whether a manually simulated fault is active.
      */
     val hasFault: Boolean
         get() = fault != SatelliteFault.NONE
+
+    /**
+     * Indicates whether the internal power model
+     * is currently in its depleted/offline state.
+     */
+    val isPowerDepleted: Boolean
+        get() = onboardTelemetry.powerMode == PowerMode.OFFLINE
 
     /**
      * Returns the age of the last received telemetry packet.
@@ -131,10 +144,8 @@ data class SatelliteState(
 }
 
 /**
- * Represents the observable state of the mission dashboard.
- *
- * Contains the complete satellite fleet, current selection,
- * simulation clock, and recorded mission events.
+ * Represents the complete observable state of
+ * the satellite mission-control interface.
  */
 data class OrbitalUiState(
     val elapsedSeconds: Int,
@@ -144,7 +155,7 @@ data class OrbitalUiState(
 ) {
 
     /**
-     * Returns the currently selected spacecraft.
+     * Returns the selected spacecraft.
      */
     val selectedSatellite: SatelliteState
         get() = satellites.first {
@@ -152,20 +163,20 @@ data class OrbitalUiState(
         }
 
     /**
-     * Counts spacecraft with an active simulated fault.
+     * Counts spacecraft with manually injected faults.
      */
     val faultCount: Int
         get() = satellites.count { it.hasFault }
 
     /**
-     * Returns all unresolved mission alerts.
+     * Returns all unresolved operational alerts.
      */
     val activeAlerts: List<MissionEvent>
         get() = events.filter { it.isActive }
 
     /**
-     * Counts unresolved alerts that an operator
-     * has not yet acknowledged.
+     * Counts unresolved alerts that have not
+     * been acknowledged by the operator.
      */
     val unacknowledgedAlertCount: Int
         get() = activeAlerts.count {

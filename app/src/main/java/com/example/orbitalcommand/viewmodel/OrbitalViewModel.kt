@@ -8,6 +8,7 @@ import com.example.orbitalcommand.model.MissionEventKind
 import com.example.orbitalcommand.model.MissionEventLog
 import com.example.orbitalcommand.model.MissionEventSeverity
 import com.example.orbitalcommand.model.OrbitalUiState
+import com.example.orbitalcommand.model.PowerMode
 import com.example.orbitalcommand.model.SatelliteCatalog
 import com.example.orbitalcommand.model.SatelliteFault
 import com.example.orbitalcommand.model.SatelliteState
@@ -22,20 +23,23 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * Manages the satellite fleet, simulated faults,
- * telemetry history, and mission event lifecycle.
+ * Manages fleet state, simulated spacecraft power,
+ * telemetry reception, faults, and operational alerts.
  *
- * Publishes immutable application state through StateFlow.
+ * All observable application state is published
+ * through a read-only StateFlow.
  */
 class OrbitalViewModel : ViewModel() {
+
+    companion object {
+        private const val MANUAL_FAULT_SOURCE = "MANUAL_FAULT"
+        private const val POWER_STATUS_SOURCE = "POWER_STATUS"
+    }
 
     private val _uiState = MutableStateFlow(
         createInitialState()
     )
 
-    /**
-     * Observable state consumed by the mission dashboard.
-     */
     val uiState: StateFlow<OrbitalUiState> =
         _uiState.asStateFlow()
 
@@ -44,22 +48,24 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Initializes the satellite fleet and event history.
+     * Creates the initial spacecraft fleet and
+     * mission event history.
      */
     private fun createInitialState(): OrbitalUiState {
 
         val satellites = SatelliteCatalog.satellites.map {
                 definition ->
 
-            val telemetry = SatelliteSimulator.snapshot(
-                second = 0,
-                satellite = definition
-            )
+            val initialTelemetry =
+                SatelliteSimulator.initialTelemetry(
+                    definition
+                )
 
             SatelliteState(
                 definition = definition,
-                telemetry = telemetry,
-                history = listOf(telemetry)
+                telemetry = initialTelemetry,
+                onboardTelemetry = initialTelemetry,
+                history = listOf(initialTelemetry)
             )
         }
 
@@ -84,11 +90,13 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Advances simulation time once per second.
+     * Updates every simulated satellite once per second.
      *
-     * Each connected satellite receives a new telemetry
-     * packet. Satellites with a communication failure
-     * retain their last received measurements.
+     * Onboard state advances regardless of the downlink
+     * condition. Received telemetry is updated only when
+     * the satellite has an operational connection.
+     *
+     * Changes in power operating mode generate events.
      */
     private fun startSimulation() {
 
@@ -103,33 +111,54 @@ class OrbitalViewModel : ViewModel() {
                     val nextSecond =
                         current.elapsedSeconds + 1
 
+                    var updatedEvents = current.events
+
                     val updatedSatellites =
                         current.satellites.map { satellite ->
 
-                            if (!satellite.isConnected) {
+                            val previousMode =
+                                satellite.onboardTelemetry.powerMode
 
-                                satellite
+                            val onboard =
+                                SatelliteSimulator.advance(
+                                    previous =
+                                        satellite.onboardTelemetry,
+                                    second = nextSecond,
+                                    satellite =
+                                        satellite.definition,
+                                    fault = satellite.fault,
+                                    faultStartedSecond =
+                                        satellite.faultStartedSecond
+                                )
+
+                            val updatedSatellite =
+                                satellite.copy(
+                                    onboardTelemetry = onboard
+                                )
+
+                            updatedEvents = updatePowerEvents(
+                                history = updatedEvents,
+                                satelliteId =
+                                    satellite.definition.id,
+                                previousMode = previousMode,
+                                currentMode = onboard.powerMode,
+                                atSecond = nextSecond
+                            )
+
+                            if (!updatedSatellite.isConnected) {
+
+                                updatedSatellite
 
                             } else {
-
-                                val telemetry =
-                                    SatelliteSimulator.snapshot(
-                                        second = nextSecond,
-                                        satellite =
-                                            satellite.definition,
-                                        fault = satellite.fault,
-                                        faultStartedSecond =
-                                            satellite.faultStartedSecond
-                                    )
 
                                 val history =
                                     TelemetryHistory.append(
                                         history = satellite.history,
-                                        sample = telemetry
+                                        sample = onboard
                                     )
 
-                                satellite.copy(
-                                    telemetry = telemetry,
+                                updatedSatellite.copy(
+                                    telemetry = onboard,
                                     history = history
                                 )
                             }
@@ -137,7 +166,8 @@ class OrbitalViewModel : ViewModel() {
 
                     current.copy(
                         elapsedSeconds = nextSecond,
-                        satellites = updatedSatellites
+                        satellites = updatedSatellites,
+                        events = updatedEvents
                     )
                 }
             }
@@ -145,21 +175,23 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Changes which satellite is displayed in the
+     * Selects the spacecraft displayed in the
      * detailed telemetry and diagnostic panels.
      */
     fun selectSatellite(satelliteId: String) {
 
         _uiState.update { current ->
 
-            val exists = current.satellites.any {
-                it.definition.id == satelliteId
-            }
+            if (
+                current.satellites.any {
+                    it.definition.id == satelliteId
+                }
+            ) {
 
-            if (exists) {
                 current.copy(
                     selectedSatelliteId = satelliteId
                 )
+
             } else {
                 current
             }
@@ -167,12 +199,14 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Applies a simulated fault to the selected satellite.
+     * Applies or clears an injected satellite fault.
      *
-     * Replacing or clearing an existing fault resolves its
-     * active alert and records a recovery event.
+     * The onboard battery charge is preserved when
+     * a fault changes. Electrical effects accumulate
+     * during subsequent simulation updates.
      *
-     * Injecting a new fault creates an actionable alert.
+     * Manual fault alerts are resolved independently
+     * of automatic power status alerts.
      */
     fun setFault(fault: SatelliteFault) {
 
@@ -186,13 +220,12 @@ class OrbitalViewModel : ViewModel() {
 
             val now = current.elapsedSeconds
 
-            val faultStart = if (
-                fault == SatelliteFault.NONE
-            ) {
-                null
-            } else {
-                now
-            }
+            val faultStart =
+                if (fault == SatelliteFault.NONE) {
+                    null
+                } else {
+                    now
+                }
 
             val updatedSatellites =
                 current.satellites.map { satellite ->
@@ -206,9 +239,20 @@ class OrbitalViewModel : ViewModel() {
 
                     } else {
 
+                        val onboard =
+                            SatelliteSimulator.refresh(
+                                previous =
+                                    satellite.onboardTelemetry,
+                                satellite =
+                                    satellite.definition,
+                                fault = fault,
+                                faultStartedSecond = faultStart
+                            )
+
                         val updated = satellite.copy(
                             fault = fault,
-                            faultStartedSecond = faultStart
+                            faultStartedSecond = faultStart,
+                            onboardTelemetry = onboard
                         )
 
                         if (!updated.isConnected) {
@@ -217,22 +261,14 @@ class OrbitalViewModel : ViewModel() {
 
                         } else {
 
-                            val telemetry =
-                                SatelliteSimulator.snapshot(
-                                    second = now,
-                                    satellite = satellite.definition,
-                                    fault = fault,
-                                    faultStartedSecond = faultStart
-                                )
-
                             val history =
                                 TelemetryHistory.append(
                                     history = satellite.history,
-                                    sample = telemetry
+                                    sample = onboard
                                 )
 
                             updated.copy(
-                                telemetry = telemetry,
+                                telemetry = onboard,
                                 history = history
                             )
                         }
@@ -241,13 +277,13 @@ class OrbitalViewModel : ViewModel() {
 
             var updatedEvents = current.events
 
-            // Resolve the previous alert when its fault ends.
             if (selected.fault != SatelliteFault.NONE) {
 
                 updatedEvents =
-                    MissionEventLog.resolveActiveForSatellite(
+                    MissionEventLog.resolveActiveForSource(
                         history = updatedEvents,
                         satelliteId = selected.definition.id,
+                        sourceKey = MANUAL_FAULT_SOURCE,
                         atSecond = now
                     )
 
@@ -256,7 +292,7 @@ class OrbitalViewModel : ViewModel() {
                         selected.fault ==
                         SatelliteFault.COMMUNICATION_LOSS
                     ) {
-                        "Communications restored"
+                        "Communications fault cleared"
                     } else {
                         "Fault cleared"
                     }
@@ -274,7 +310,6 @@ class OrbitalViewModel : ViewModel() {
                 )
             }
 
-            // Create an alert for the newly injected fault.
             if (fault != SatelliteFault.NONE) {
 
                 updatedEvents = appendEvent(
@@ -284,7 +319,8 @@ class OrbitalViewModel : ViewModel() {
                     title = fault.displayName,
                     description = fault.description,
                     severity = severityForFault(fault),
-                    kind = MissionEventKind.ALERT
+                    kind = MissionEventKind.ALERT,
+                    sourceKey = MANUAL_FAULT_SOURCE
                 )
             }
 
@@ -296,7 +332,8 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Clears the fault affecting the selected spacecraft.
+     * Removes the injected fault from the
+     * currently selected spacecraft.
      */
     fun clearFault() {
 
@@ -304,10 +341,10 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Records operator acknowledgement of an active alert.
+     * Records acknowledgement of an active alert.
      *
-     * Acknowledgement does not clear the satellite fault
-     * or change the alert's active status.
+     * Acknowledging does not resolve either a
+     * power condition or an injected fault.
      */
     fun acknowledgeAlert(eventId: Long) {
 
@@ -335,7 +372,7 @@ class OrbitalViewModel : ViewModel() {
                 title = "Alert acknowledged",
                 description =
                     "Operator acknowledged ${alert.title}. " +
-                            "The underlying fault remains active.",
+                            "The underlying condition remains active.",
                 severity = MissionEventSeverity.INFO,
                 kind = MissionEventKind.ACTIVITY
             )
@@ -347,17 +384,100 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Restores the fleet and mission event history
-     * to their initial simulation state.
+     * Generates a power alert when a spacecraft enters
+     * a new warning or offline operating state.
+     *
+     * Power alerts are based on internal simulation
+     * truth. When telemetry is unavailable, the
+     * application must identify the state as simulated
+     * rather than independently verified by downlink.
      */
-    fun resetSimulation() {
+    private fun updatePowerEvents(
+        history: List<MissionEvent>,
+        satelliteId: String,
+        previousMode: PowerMode,
+        currentMode: PowerMode,
+        atSecond: Int
+    ): List<MissionEvent> {
 
-        _uiState.value = createInitialState()
+        if (previousMode == currentMode) {
+            return history
+        }
+
+        var updated = MissionEventLog.resolveActiveForSource(
+            history = history,
+            satelliteId = satelliteId,
+            sourceKey = POWER_STATUS_SOURCE,
+            atSecond = atSecond
+        )
+
+        if (currentMode == PowerMode.NORMAL) {
+
+            return appendEvent(
+                history = updated,
+                satelliteId = satelliteId,
+                atSecond = atSecond,
+                title = "Normal power restored",
+                description =
+                    "The simulated battery has recovered " +
+                            "to normal operating charge.",
+                severity = MissionEventSeverity.INFO,
+                kind = MissionEventKind.ACTIVITY
+            )
+        }
+
+        val title: String
+        val description: String
+        val severity: MissionEventSeverity
+
+        when (currentMode) {
+
+            PowerMode.LOW_POWER -> {
+                title = "Low battery"
+                description =
+                    "The simulated spacecraft is reducing " +
+                            "power consumption."
+                severity = MissionEventSeverity.WARNING
+            }
+
+            PowerMode.SAFE_MODE -> {
+                title = "Power safe mode"
+                description =
+                    "Nonessential simulated systems are " +
+                            "disabled to conserve battery charge."
+                severity = MissionEventSeverity.CRITICAL
+            }
+
+            PowerMode.OFFLINE -> {
+                title = "Simulated power depletion"
+                description =
+                    "The internal simulation reports power " +
+                            "depletion. Ground telemetry is unavailable."
+                severity = MissionEventSeverity.CRITICAL
+            }
+
+            PowerMode.NORMAL -> {
+                return updated
+            }
+        }
+
+        updated = appendEvent(
+            history = updated,
+            satelliteId = satelliteId,
+            atSecond = atSecond,
+            title = title,
+            description = description,
+            severity = severity,
+            kind = MissionEventKind.ALERT,
+            sourceKey = POWER_STATUS_SOURCE
+        )
+
+        return updated
     }
 
     /**
-     * Determines the operator-facing severity of
-     * a simulated satellite fault.
+     * Returns the operator-facing severity
+     * for an injected fault.
      */
     private fun severityForFault(
         fault: SatelliteFault
@@ -379,8 +499,11 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Appends a uniquely identified mission event
-     * to the bounded event history.
+     * Adds an event using the next available identifier.
+     *
+     * Event identifiers are derived from the most recent
+     * retained event and are unique within the current
+     * in-memory simulation.
      */
     private fun appendEvent(
         history: List<MissionEvent>,
@@ -389,7 +512,8 @@ class OrbitalViewModel : ViewModel() {
         title: String,
         description: String,
         severity: MissionEventSeverity,
-        kind: MissionEventKind
+        kind: MissionEventKind,
+        sourceKey: String? = null
     ): List<MissionEvent> {
 
         val nextId = (
@@ -403,12 +527,22 @@ class OrbitalViewModel : ViewModel() {
             title = title,
             description = description,
             severity = severity,
-            kind = kind
+            kind = kind,
+            sourceKey = sourceKey
         )
 
         return MissionEventLog.record(
             history = history,
             event = event
         )
+    }
+
+    /**
+     * Resets the satellite fleet, power model,
+     * telemetry histories, and mission event history.
+     */
+    fun resetSimulation() {
+
+        _uiState.value = createInitialState()
     }
 }

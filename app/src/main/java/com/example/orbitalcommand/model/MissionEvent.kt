@@ -11,8 +11,8 @@ enum class MissionEventSeverity {
 }
 
 /**
- * Distinguishes actionable alerts from ordinary
- * operational history entries.
+ * Distinguishes actionable alerts from
+ * informational operational events.
  */
 enum class MissionEventKind {
     ALERT,
@@ -20,12 +20,11 @@ enum class MissionEventKind {
 }
 
 /**
- * Represents a recorded event in the mission simulation.
+ * Represents an event recorded during the simulation.
  *
- * Alert events can be acknowledged and resolved independently.
- * Activity events provide an informational audit trail.
- *
- * All timestamps use elapsed simulation seconds.
+ * sourceKey identifies the subsystem responsible for
+ * an alert, allowing independent faults to be resolved
+ * without affecting unrelated active alerts.
  */
 data class MissionEvent(
     val id: Long,
@@ -36,41 +35,39 @@ data class MissionEvent(
     val severity: MissionEventSeverity,
     val kind: MissionEventKind,
     val acknowledgedAtSecond: Int? = null,
-    val resolvedAtSecond: Int? = null
+    val resolvedAtSecond: Int? = null,
+    val sourceKey: String? = null
 ) {
 
     /**
-     * Indicates whether this event represents an
-     * unresolved operational alert.
+     * Indicates whether an operational alert
+     * remains unresolved.
      */
     val isActive: Boolean
         get() = kind == MissionEventKind.ALERT &&
                 resolvedAtSecond == null
 
     /**
-     * Indicates whether an operator has acknowledged
-     * this event.
+     * Indicates whether an operator acknowledged
+     * the event.
      */
     val isAcknowledged: Boolean
         get() = acknowledgedAtSecond != null
 }
 
 /**
- * Provides immutable operations for recording and updating
- * the mission event history.
+ * Maintains immutable, bounded mission event history.
  *
- * Active alerts are retained until they are resolved.
- * The number of archived events is bounded to prevent
- * unbounded memory growth.
+ * Active alerts are retained until resolution, while
+ * archived events are limited to a fixed collection size.
  */
 object MissionEventLog {
 
     const val MAX_ARCHIVED_EVENTS = 100
 
     /**
-     * Records an event with a unique, increasing identifier.
-     *
-     * The newest event appears first in the returned history.
+     * Records a new event and places it before
+     * older events.
      */
     fun record(
         history: List<MissionEvent>,
@@ -86,7 +83,7 @@ object MissionEventLog {
         }
 
         require(history.none { it.id == event.id }) {
-            "An event with this identifier already exists."
+            "Duplicate event identifier."
         }
 
         return trim(
@@ -96,10 +93,7 @@ object MissionEventLog {
 
     /**
      * Acknowledges an active alert without resolving
-     * its underlying fault.
-     *
-     * Missing, resolved, or previously acknowledged
-     * alerts remain unchanged.
+     * its underlying operational problem.
      */
     fun acknowledge(
         history: List<MissionEvent>,
@@ -130,10 +124,11 @@ object MissionEventLog {
     }
 
     /**
-     * Resolves active alerts associated with a satellite.
+     * Resolves all active alerts associated with
+     * a particular satellite.
      *
-     * The acknowledgement state is preserved for
-     * subsequent review in the event history.
+     * This operation is retained for general fleet
+     * maintenance and existing test compatibility.
      */
     fun resolveActiveForSatellite(
         history: List<MissionEvent>,
@@ -145,27 +140,65 @@ object MissionEventLog {
             "Simulation time cannot be negative."
         }
 
-        val updated = history.map { event ->
+        return trim(
+            history.map { event ->
 
-            if (
-                event.satelliteId == satelliteId &&
-                event.isActive
-            ) {
+                if (
+                    event.satelliteId == satelliteId &&
+                    event.isActive
+                ) {
 
-                event.copy(
-                    resolvedAtSecond = atSecond
-                )
+                    event.copy(
+                        resolvedAtSecond = atSecond
+                    )
 
-            } else {
-                event
+                } else {
+                    event
+                }
             }
-        }
-
-        return trim(updated)
+        )
     }
 
     /**
-     * Retains all active alerts and the most recent
+     * Resolves only alerts from the specified
+     * spacecraft and subsystem source.
+     *
+     * For example, clearing a manually injected fault
+     * must not clear an unrelated power status alert.
+     */
+    fun resolveActiveForSource(
+        history: List<MissionEvent>,
+        satelliteId: String,
+        sourceKey: String,
+        atSecond: Int
+    ): List<MissionEvent> {
+
+        require(atSecond >= 0) {
+            "Simulation time cannot be negative."
+        }
+
+        return trim(
+            history.map { event ->
+
+                if (
+                    event.satelliteId == satelliteId &&
+                    event.sourceKey == sourceKey &&
+                    event.isActive
+                ) {
+
+                    event.copy(
+                        resolvedAtSecond = atSecond
+                    )
+
+                } else {
+                    event
+                }
+            }
+        )
+    }
+
+    /**
+     * Retains every active alert and the most recent
      * archived or informational events.
      */
     private fun trim(
