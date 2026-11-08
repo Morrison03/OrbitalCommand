@@ -8,6 +8,7 @@ import com.example.orbitalcommand.model.MissionEvent
 import com.example.orbitalcommand.model.MissionEventKind
 import com.example.orbitalcommand.model.MissionEventLog
 import com.example.orbitalcommand.model.MissionEventSeverity
+import com.example.orbitalcommand.model.OrbitalServicing
 import com.example.orbitalcommand.model.OrbitalUiState
 import com.example.orbitalcommand.model.PowerMode
 import com.example.orbitalcommand.model.RepairStatus
@@ -15,6 +16,7 @@ import com.example.orbitalcommand.model.RepairWorkOrders
 import com.example.orbitalcommand.model.SatelliteCatalog
 import com.example.orbitalcommand.model.SatelliteFault
 import com.example.orbitalcommand.model.SatelliteState
+import com.example.orbitalcommand.model.SatelliteTelemetry
 import com.example.orbitalcommand.model.TelemetryHistory
 import com.example.orbitalcommand.simulation.SatelliteSimulator
 import kotlinx.coroutines.delay
@@ -26,10 +28,13 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * Manages the spacecraft fleet, telemetry, electrical
- * power, mission alerts, and equipment servicing workflow.
+ * Manages the satellite fleet, equipment faults,
+ * electrical power, mission events, and maintenance
+ * operations.
  *
- * Exposes a read-only StateFlow for the Compose interface.
+ * The servicing station has an independent simulated
+ * orbital position. Preparing a maintenance mission
+ * does not dispatch a vehicle or complete any repair.
  */
 class OrbitalViewModel : ViewModel() {
 
@@ -43,6 +48,10 @@ class OrbitalViewModel : ViewModel() {
         createInitialState()
     )
 
+    /**
+     * Read-only fleet and mission state observed
+     * by the application interface.
+     */
     val uiState: StateFlow<OrbitalUiState> =
         _uiState.asStateFlow()
 
@@ -51,8 +60,8 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Creates the initial satellite fleet and
-     * records the start of the simulation.
+     * Creates the initial fleet, servicing station,
+     * and mission event history.
      */
     private fun createInitialState(): OrbitalUiState {
 
@@ -88,16 +97,20 @@ class OrbitalViewModel : ViewModel() {
             selectedSatelliteId =
                 SatelliteCatalog.satellites.first().id,
             events = listOf(initialEvent),
-            repairOrders = emptyList()
+            repairOrders = emptyList(),
+            servicingStation = OrbitalServicing.stationAt(0),
+            preparedMission = null
         )
     }
 
     /**
-     * Advances all satellites once per simulation second.
+     * Advances satellite and servicing station motion
+     * once per simulation second.
      *
-     * Onboard state continues to advance during telemetry
-     * outages. Only successfully received packets are
-     * added to the ground station's historical measurements.
+     * The station moves independently of the satellites.
+     * Onboard telemetry continues advancing during a
+     * communication outage, while received telemetry
+     * remains frozen until the connection is restored.
      */
     private fun startSimulation() {
 
@@ -156,7 +169,6 @@ class OrbitalViewModel : ViewModel() {
                             )
 
                         } else {
-
                             updated
                         }
                     }
@@ -164,7 +176,9 @@ class OrbitalViewModel : ViewModel() {
                     current.copy(
                         elapsedSeconds = nextSecond,
                         satellites = satellites,
-                        events = events
+                        events = events,
+                        servicingStation =
+                            OrbitalServicing.stationAt(nextSecond)
                     )
                 }
             }
@@ -172,7 +186,8 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Selects a satellite for detailed inspection.
+     * Selects a spacecraft for detailed inspection
+     * without pausing other mission entities.
      */
     fun selectSatellite(satelliteId: String) {
 
@@ -197,8 +212,8 @@ class OrbitalViewModel : ViewModel() {
     /**
      * Applies or clears a temporary diagnostic fault.
      *
-     * Changing temporary faults does not modify
-     * persistent equipment damage or repair orders.
+     * The satellite's persistent equipment damage
+     * and prepared servicing mission remain unchanged.
      */
     fun setFault(fault: SatelliteFault) {
 
@@ -298,21 +313,18 @@ class OrbitalViewModel : ViewModel() {
 
     /**
      * Clears the selected satellite's temporary fault.
-     *
-     * Persistent equipment damage remains unchanged.
+     * Equipment damage remains until servicing completes.
      */
     fun clearFault() {
-
         setFault(SatelliteFault.NONE)
     }
 
     /**
-     * Introduces persistent equipment damage into
-     * the selected satellite's simulated hardware.
+     * Introduces persistent equipment damage and
+     * creates its corresponding repair work order.
      *
-     * A work order and mission alert are created.
-     * Existing damage must be repaired before another
-     * damage scenario can be injected.
+     * Only one active equipment repair is supported
+     * per satellite in the current simulation.
      */
     fun injectEquipmentDamage(
         damage: EquipmentDamage
@@ -400,8 +412,8 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Places an open repair work order into the
-     * simulated servicing queue.
+     * Places an open repair request in the
+     * servicing work-order queue.
      */
     fun queueRepair(orderId: Long) {
 
@@ -440,13 +452,112 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Completes a queued repair in the simulator.
+     * Prepares a mission for a valid queued repair order.
      *
-     * This test-only operator action represents successful
-     * maintenance without modeling an actual repair robot.
+     * Only one servicing mission can be prepared at a time.
+     * The selected work order remains queued, and no repair
+     * is performed by this operation.
+     */
+    fun prepareServicingMission(orderId: Long) {
+
+        _uiState.update { current ->
+
+            if (current.preparedMission != null) {
+                return@update current
+            }
+
+            val order = current.repairOrders.firstOrNull {
+                it.id == orderId &&
+                        it.status == RepairStatus.QUEUED
+            } ?: return@update current
+
+            val target = current.satellites.firstOrNull {
+                it.definition.id == order.satelliteId
+            } ?: return@update current
+
+            if (target.equipmentDamage != order.damage) {
+                return@update current
+            }
+
+            val now = current.elapsedSeconds
+
+            val plan = OrbitalServicing.prepare(
+                orders = current.repairOrders,
+                satellites = current.satellites,
+                workOrderId = orderId,
+                atSecond = now
+            )
+
+            val verificationMessage =
+                if (plan.telemetryVerificationRequired) {
+                    " Target telemetry requires independent " +
+                            "verification before future dispatch."
+                } else {
+                    " Target telemetry was current at preparation."
+                }
+
+            val events = appendEvent(
+                history = current.events,
+                satelliteId = plan.targetSatelliteId,
+                atSecond = now,
+                title = "Servicing mission prepared",
+                description =
+                    "${current.servicingStation.id} prepared " +
+                            "work order #${plan.workOrderId}: " +
+                            "${plan.damage.repairAction}. " +
+                            "No servicing vehicle has been dispatched." +
+                            verificationMessage,
+                severity = MissionEventSeverity.INFO,
+                kind = MissionEventKind.ACTIVITY
+            )
+
+            current.copy(
+                preparedMission = plan,
+                events = events
+            )
+        }
+    }
+
+    /**
+     * Cancels the prepared mission without altering
+     * the queued repair work order or equipment damage.
+     */
+    fun cancelServicingMission() {
+
+        _uiState.update { current ->
+
+            val plan = current.preparedMission
+                ?: return@update current
+
+            val events = appendEvent(
+                history = current.events,
+                satelliteId = plan.targetSatelliteId,
+                atSecond = current.elapsedSeconds,
+                title = "Mission preparation cancelled",
+                description =
+                    "Preparation for work order " +
+                            "#${plan.workOrderId} was cancelled. " +
+                            "The repair remains queued.",
+                severity = MissionEventSeverity.INFO,
+                kind = MissionEventKind.ACTIVITY
+            )
+
+            current.copy(
+                preparedMission = null,
+                events = events
+            )
+        }
+    }
+
+    /**
+     * Completes a queued repair through the existing
+     * test-only maintenance control.
      *
-     * The battery retains its existing charge, and unrelated
-     * temporary faults and power alerts remain active.
+     * If the corresponding work order has a prepared
+     * mission, that plan is closed automatically to
+     * prevent it from referencing a completed repair.
+     *
+     * This operation does not simulate physical servicing.
      */
     fun completeRepair(orderId: Long) {
 
@@ -512,6 +623,24 @@ class OrbitalViewModel : ViewModel() {
                 atSecond = now
             )
 
+            val hasPreparedMission =
+                current.preparedMission?.workOrderId == orderId
+
+            if (hasPreparedMission) {
+
+                events = appendEvent(
+                    history = events,
+                    satelliteId = order.satelliteId,
+                    atSecond = now,
+                    title = "Prepared mission closed",
+                    description =
+                        "Work order #$orderId was completed " +
+                                "through the test-only maintenance control.",
+                    severity = MissionEventSeverity.INFO,
+                    kind = MissionEventKind.ACTIVITY
+                )
+            }
+
             events = appendEvent(
                 history = events,
                 satelliteId = order.satelliteId,
@@ -528,21 +657,26 @@ class OrbitalViewModel : ViewModel() {
             current.copy(
                 satellites = satellites,
                 repairOrders = orders,
-                events = events
+                events = events,
+                preparedMission = if (hasPreparedMission) {
+                    null
+                } else {
+                    current.preparedMission
+                }
             )
         }
     }
 
     /**
-     * Updates received telemetry only when the satellite
-     * has an operational connection.
+     * Updates received telemetry only when the
+     * satellite can successfully transmit.
      *
-     * During an outage, the last received measurements
-     * and history remain unchanged.
+     * During an outage, last received measurements
+     * and historical samples remain unchanged.
      */
     private fun withReceivedTelemetry(
         satellite: SatelliteState,
-        onboard: com.example.orbitalcommand.model.SatelliteTelemetry
+        onboard: SatelliteTelemetry
     ): SatelliteState {
 
         if (!satellite.isConnected) {
@@ -561,8 +695,10 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Acknowledges an active mission alert without
-     * clearing its underlying condition.
+     * Acknowledges an active mission alert.
+     *
+     * Acknowledgement does not resolve its associated
+     * fault, damaged equipment, or power condition.
      */
     fun acknowledgeAlert(eventId: Long) {
 
@@ -599,8 +735,10 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Records power-state transitions while maintaining
-     * separate alerts for equipment damage and faults.
+     * Records changes in simulated power state.
+     *
+     * Power alerts have their own source key so
+     * equipment repairs cannot resolve them by mistake.
      */
     private fun updatePowerEvents(
         history: List<MissionEvent>,
@@ -661,9 +799,8 @@ class OrbitalViewModel : ViewModel() {
             PowerMode.OFFLINE -> {
                 title = "Simulated power depletion"
                 description =
-                    "The internal simulator reports " +
-                            "power depletion. Ground telemetry " +
-                            "is unavailable."
+                    "The internal simulator reports power " +
+                            "depletion. Ground telemetry is unavailable."
                 severity = MissionEventSeverity.CRITICAL
             }
 
@@ -685,7 +822,8 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Assigns an alert severity to temporary faults.
+     * Returns operator-facing severity for
+     * temporary diagnostic faults.
      */
     private fun severityForFault(
         fault: SatelliteFault
@@ -707,7 +845,8 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Assigns an alert severity to equipment damage.
+     * Returns operator-facing severity for
+     * persistent equipment damage.
      */
     private fun severityForDamage(
         damage: EquipmentDamage
@@ -728,8 +867,8 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Creates a mission event using a unique identifier
-     * within the current simulation history.
+     * Records a new mission event with an identifier
+     * unique within the retained simulation history.
      */
     private fun appendEvent(
         history: List<MissionEvent>,
@@ -762,11 +901,12 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Restores the fleet, work orders, telemetry history,
-     * and mission alerts to their initial state.
+     * Restores satellites, station position, telemetry,
+     * faults, alerts, repair orders, and mission planning
+     * to their initial simulation state.
      */
     fun resetSimulation() {
-
         _uiState.value = createInitialState()
     }
 }
+

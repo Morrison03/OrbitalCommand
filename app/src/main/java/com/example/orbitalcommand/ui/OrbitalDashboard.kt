@@ -28,8 +28,8 @@ import com.example.orbitalcommand.viewmodel.OrbitalViewModel
 import java.util.Locale
 
 /**
- * Connects observable fleet state and operator actions
- * to the satellite mission-control interface.
+ * Connects observable mission state and operator
+ * actions to the main dashboard.
  */
 @Composable
 fun OrbitalRoute(
@@ -46,17 +46,19 @@ fun OrbitalRoute(
         onInjectDamage = viewModel::injectEquipmentDamage,
         onQueueRepair = viewModel::queueRepair,
         onCompleteRepair = viewModel::completeRepair,
+        onPrepareMission = viewModel::prepareServicingMission,
+        onCancelMission = viewModel::cancelServicingMission,
         onAcknowledgeAlert = viewModel::acknowledgeAlert,
         onReset = viewModel::resetSimulation
     )
 }
 
 /**
- * Displays fleet monitoring, telemetry, mission alerts,
- * equipment diagnostics, and maintenance operations.
+ * Displays satellite monitoring, repair work orders,
+ * mission alerts, and servicing station operations.
  *
- * Uses a stacked layout on phones and two columns
- * on sufficiently wide tablet displays.
+ * A stacked layout is used on narrow screens and a
+ * two-column layout on wider tablet displays.
  */
 @Composable
 fun OrbitalDashboard(
@@ -67,6 +69,8 @@ fun OrbitalDashboard(
     onInjectDamage: (EquipmentDamage) -> Unit,
     onQueueRepair: (Long) -> Unit,
     onCompleteRepair: (Long) -> Unit,
+    onPrepareMission: (Long) -> Unit,
+    onCancelMission: () -> Unit,
     onAcknowledgeAlert: (Long) -> Unit,
     onReset: () -> Unit
 ) {
@@ -85,8 +89,7 @@ fun OrbitalDashboard(
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp),
-            verticalArrangement =
-                Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
 
             DashboardHeader(state)
@@ -125,6 +128,13 @@ fun OrbitalDashboard(
                             onInjectDamage = onInjectDamage,
                             onQueueRepair = onQueueRepair,
                             onCompleteRepair = onCompleteRepair,
+                            onSelectSatellite = onSelectSatellite
+                        )
+
+                        ServicingMissionPanel(
+                            state = state,
+                            onPrepareMission = onPrepareMission,
+                            onCancelMission = onCancelMission,
                             onSelectSatellite = onSelectSatellite
                         )
 
@@ -193,6 +203,13 @@ fun OrbitalDashboard(
                     onSelectSatellite = onSelectSatellite
                 )
 
+                ServicingMissionPanel(
+                    state = state,
+                    onPrepareMission = onPrepareMission,
+                    onCancelMission = onCancelMission,
+                    onSelectSatellite = onSelectSatellite
+                )
+
                 MissionEventHistoryPanel(
                     events = state.events
                 )
@@ -202,8 +219,8 @@ fun OrbitalDashboard(
 }
 
 /**
- * Displays mission identification, fleet alerts,
- * and maintenance workload.
+ * Displays fleet identification, alert counts,
+ * and prepared mission status.
  */
 @Composable
 private fun DashboardHeader(
@@ -233,8 +250,7 @@ private fun DashboardHeader(
 
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement =
-                Arrangement.SpaceBetween,
+            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
 
@@ -277,6 +293,17 @@ private fun DashboardHeader(
                 color = OrbitalColors.Accent,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.SemiBold
+            )
+        }
+
+        if (state.preparedMission != null) {
+
+            Text(
+                text = "SERVICING MISSION PREPARED — " +
+                        "Work order #${state.preparedMission.workOrderId}",
+                color = Color(0xFFFBBF24),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold
             )
         }
     }
@@ -341,8 +368,8 @@ private fun SatelliteSelector(
 }
 
 /**
- * Displays all spacecraft positions using the
- * existing orbital visualization.
+ * Displays the satellite fleet and servicing station
+ * on schematic, independently animated orbital tracks.
  */
 @Composable
 private fun OrbitPanel(state: OrbitalUiState) {
@@ -351,7 +378,8 @@ private fun OrbitPanel(state: OrbitalUiState) {
 
         OrbitVisualization(
             satellites = state.satellites,
-            selectedSatelliteId = state.selectedSatelliteId
+            selectedSatelliteId = state.selectedSatelliteId,
+            servicingStation = state.servicingStation
         )
 
         Text(
@@ -361,10 +389,18 @@ private fun OrbitPanel(state: OrbitalUiState) {
             fontWeight = FontWeight.SemiBold
         )
 
+        Text(
+            text = "OS-001: Green • SAT-001: Cyan • " +
+                    "SAT-002: Amber • SAT-003: Violet",
+            color = OrbitalColors.Muted,
+            fontSize = 11.sp
+        )
+
         if (!state.selectedSatellite.isConnected) {
 
             Text(
-                text = "Showing last received spacecraft position.",
+                text = "Selected satellite position is " +
+                        "the last received position.",
                 color = OrbitalColors.Warning,
                 fontSize = 12.sp
             )
@@ -379,8 +415,8 @@ private fun OrbitPanel(state: OrbitalUiState) {
 }
 
 /**
- * Summarizes operational conditions for
- * the complete satellite fleet.
+ * Summarizes the current condition of all satellites
+ * and identifies the separate servicing station.
  */
 @Composable
 private fun FleetOverview(state: OrbitalUiState) {
@@ -423,12 +459,22 @@ private fun FleetOverview(state: OrbitalUiState) {
                 warning = status != "NOMINAL"
             )
         }
+
+        HorizontalDivider(
+            color = OrbitalColors.PanelRaised
+        )
+
+        StatusRow(
+            label = state.servicingStation.id,
+            status = "MISSION PLANNING",
+            warning = false
+        )
     }
 }
 
 /**
- * Displays the most recently received measurements
- * for the selected spacecraft.
+ * Displays the last successfully received measurements
+ * from the selected satellite.
  */
 @Composable
 private fun TelemetryPanel(
@@ -516,7 +562,7 @@ private fun TelemetryPanel(
 }
 
 /**
- * Displays historical telemetry for the
+ * Displays historical measurements for the
  * currently selected satellite.
  */
 @Composable
@@ -534,10 +580,11 @@ private fun TelemetryHistoryPanel(
 }
 
 /**
- * Displays subsystem health and equipment damage.
+ * Displays subsystem diagnostics and identifies
+ * known equipment damage requiring maintenance.
  *
- * When communications are unavailable, received
- * subsystem health cannot be independently verified.
+ * When telemetry is unavailable, received subsystem
+ * health cannot be independently verified.
  */
 @Composable
 private fun SystemHealthPanel(
@@ -653,10 +700,11 @@ private fun SystemHealthPanel(
 }
 
 /**
- * Provides controls for temporary diagnostic faults.
+ * Provides controls for temporary diagnostic faults
+ * and resetting the entire simulation.
  *
- * Persistent equipment damage is managed separately
- * through the repair operations workflow.
+ * Persistent equipment damage is managed through
+ * repair work orders rather than these controls.
  */
 @Composable
 private fun FaultControlPanel(
@@ -750,8 +798,7 @@ private fun FaultControlPanel(
 }
 
 /**
- * Provides a shared container for
- * dashboard information sections.
+ * Provides a consistent container for dashboard panels.
  */
 @Composable
 private fun DashboardPanel(
@@ -788,7 +835,7 @@ private fun DashboardPanel(
 }
 
 /**
- * Displays a formatted telemetry measurement.
+ * Displays a formatted satellite telemetry value.
  */
 @Composable
 private fun TelemetryCard(
@@ -827,7 +874,7 @@ private fun TelemetryCard(
 }
 
 /**
- * Displays the condition of one spacecraft subsystem.
+ * Displays a subsystem or entity operational status.
  */
 @Composable
 private fun StatusRow(
@@ -838,8 +885,7 @@ private fun StatusRow(
 
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement =
-            Arrangement.SpaceBetween,
+        horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
 
@@ -850,7 +896,9 @@ private fun StatusRow(
             modifier = Modifier.weight(1f)
         )
 
-        Spacer(modifier = Modifier.width(8.dp))
+        Spacer(
+            modifier = Modifier.width(8.dp)
+        )
 
         Text(
             text = status,
