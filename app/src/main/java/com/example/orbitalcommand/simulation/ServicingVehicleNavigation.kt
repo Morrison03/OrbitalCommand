@@ -11,31 +11,40 @@ import com.example.orbitalcommand.model.ServicingVehiclePhase
 import com.example.orbitalcommand.model.ServicingVehicleState
 import com.example.orbitalcommand.model.VehicleHoldReason
 import com.example.orbitalcommand.model.VehiclePosition
+import kotlin.math.asin
 
 /**
- * Advances a servicing vehicle through a
- * simplified orbital maintenance demonstration.
+ * Controls scripted servicing vehicle movement,
+ * approach, formation following, and return to station.
  *
- * The movement algorithm is intended for testing
- * mission states and operator controls.
+ * Formation following maintains a fixed schematic
+ * separation behind a moving satellite on its orbital
+ * display track.
  *
- * It is not flight software, orbital guidance,
- * rendezvous planning, or collision avoidance.
+ * This is a visualization and operator-interaction model,
+ * not a physically accurate orbital guidance system.
  */
 object ServicingVehicleNavigation {
 
     private const val DEPLOY_OFFSET = 0.035f
+
     private const val APPROACH_STEP = 0.045f
     private const val RETURN_STEP = 0.055f
-    private const val TARGET_STANDOFF = 0.065f
+
+    /**
+     * Desired visual separation between the satellite
+     * and servicing vehicle in normalized display units.
+     */
+    const val FORMATION_SEPARATION = 0.065f
+
+    private const val FORMATION_TOLERANCE = 0.006f
     private const val DOCK_TOLERANCE = 0.025f
-    private const val POSITION_EPSILON = 0.0005f
 
     private const val MAX_TELEMETRY_AGE_SECONDS = 5
 
     /**
-     * Determines whether the target has sufficiently
-     * recent received telemetry for guided movement.
+     * Indicates whether received satellite telemetry
+     * is current enough for scripted formation guidance.
      */
     fun hasCurrentTargetTelemetry(
         target: SatelliteState,
@@ -49,10 +58,11 @@ object ServicingVehicleNavigation {
     }
 
     /**
-     * Revalidates the work order and target at dispatch.
+     * Revalidates a prepared mission before dispatch.
      *
-     * Preparation alone is not enough to authorize
-     * dispatch because the target's condition may change.
+     * The associated work order must remain queued,
+     * its equipment damage must still be active, and
+     * the target must have current received telemetry.
      */
     fun isDispatchReady(
         plan: ServicingMissionPlan,
@@ -73,17 +83,53 @@ object ServicingVehicleNavigation {
                 order.satelliteId == plan.targetSatelliteId &&
                 order.damage == plan.damage &&
                 target.equipmentDamage == plan.damage &&
-                hasCurrentTargetTelemetry(
-                    target,
-                    atSecond
-                )
+                hasCurrentTargetTelemetry(target, atSecond)
     }
 
     /**
-     * Dispatches a docked servicing vehicle from OS-001.
+     * Determines the desired formation-following position.
      *
-     * Deployment places the vehicle a small visual
-     * distance outside the station.
+     * The servicer follows behind the satellite on the
+     * same schematic orbital circle. The angular offset
+     * is calculated to preserve approximately the same
+     * visual separation for satellites at different radii.
+     */
+    fun formationPosition(
+        target: SatelliteState
+    ): VehiclePosition {
+
+        val radius = target.definition.orbitRadiusFraction
+
+        require(radius > FORMATION_SEPARATION / 2f) {
+            "Target orbit is too small for formation spacing."
+        }
+
+        val halfAngle = asin(
+            (
+                    FORMATION_SEPARATION /
+                            (2f * radius)
+                    ).toDouble()
+        )
+
+        val angularSeparationDegrees = Math.toDegrees(
+            2.0 * halfAngle
+        ).toFloat()
+
+        val followingAngle =
+            target.telemetry.orbitAngleDegrees -
+                    angularSeparationDegrees
+
+        return OrbitalDisplayGeometry.onOrbit(
+            angleDegrees = followingAngle,
+            radiusFraction = radius
+        )
+    }
+
+    /**
+     * Deploys the vehicle near the servicing station.
+     *
+     * Deployment assigns the vehicle to the selected
+     * repair work order without completing maintenance.
      */
     fun dispatch(
         vehicle: ServicingVehicleState,
@@ -110,8 +156,8 @@ object ServicingVehicleNavigation {
     }
 
     /**
-     * Starts the scripted approach to the assigned
-     * satellite after validating target telemetry.
+     * Begins guided movement toward the assigned
+     * satellite's formation-following position.
      */
     fun beginApproach(
         vehicle: ServicingVehicleState,
@@ -126,8 +172,7 @@ object ServicingVehicleNavigation {
         }
 
         require(
-            vehicle.targetSatelliteId ==
-                    target.definition.id
+            vehicle.targetSatelliteId == target.definition.id
         ) {
             "Incorrect target satellite."
         }
@@ -145,8 +190,11 @@ object ServicingVehicleNavigation {
     }
 
     /**
-     * Stops an active approach at its current
-     * schematic position.
+     * Pauses an operator-controlled scripted approach.
+     *
+     * The vehicle's current display position is retained.
+     * Active formation following is not automatically
+     * stopped by reaching its target position.
      */
     fun hold(
         vehicle: ServicingVehicleState
@@ -165,8 +213,11 @@ object ServicingVehicleNavigation {
     }
 
     /**
-     * Resumes approach after checking that target
-     * telemetry is available and current.
+     * Resumes guidance toward the moving target after
+     * confirming that current telemetry is available.
+     *
+     * When the vehicle reaches its formation position,
+     * it automatically returns to formation following.
      */
     fun resumeApproach(
         vehicle: ServicingVehicleState,
@@ -181,8 +232,7 @@ object ServicingVehicleNavigation {
         }
 
         require(
-            vehicle.targetSatelliteId ==
-                    target.definition.id
+            vehicle.targetSatelliteId == target.definition.id
         ) {
             "Incorrect target satellite."
         }
@@ -200,8 +250,10 @@ object ServicingVehicleNavigation {
     }
 
     /**
-     * Commands a deployed vehicle to return
-     * to its moving home station.
+     * Commands the vehicle to navigate back to OS-001.
+     *
+     * Return is available during deployment, approach,
+     * formation following, or a navigation hold.
      */
     fun beginReturn(
         vehicle: ServicingVehicleState
@@ -209,10 +261,10 @@ object ServicingVehicleNavigation {
 
         require(
             vehicle.phase == ServicingVehiclePhase.DEPLOYED ||
+                    vehicle.phase == ServicingVehiclePhase.APPROACHING ||
                     vehicle.phase ==
-                    ServicingVehiclePhase.APPROACHING ||
-                    vehicle.phase ==
-                    ServicingVehiclePhase.HOLDING
+                    ServicingVehiclePhase.FORMATION_FOLLOWING ||
+                    vehicle.phase == ServicingVehiclePhase.HOLDING
         ) {
             "Vehicle cannot begin return from this state."
         }
@@ -224,12 +276,16 @@ object ServicingVehicleNavigation {
     }
 
     /**
-     * Advances the vehicle by one simulation step.
+     * Advances scripted vehicle movement by one
+     * simulation second.
      *
-     * Guided approach stops when telemetry becomes
-     * unavailable or the target standoff is reached.
+     * During formation following, the vehicle's display
+     * position is recalculated using the target's latest
+     * received orbital angle. This causes the satellite
+     * and servicer to orbit together.
      *
-     * Reaching standoff does not repair the satellite.
+     * Unavailable telemetry suspends automatic guidance
+     * without using stale position data.
      */
     fun advance(
         vehicle: ServicingVehicleState,
@@ -255,16 +311,14 @@ object ServicingVehicleNavigation {
 
             ServicingVehiclePhase.DEPLOYED,
             ServicingVehiclePhase.HOLDING -> {
+
                 vehicle
             }
 
             ServicingVehiclePhase.APPROACHING -> {
 
-                if (
-                    target == null ||
-                    target.definition.id !=
-                    vehicle.targetSatelliteId ||
-                    !hasCurrentTargetTelemetry(
+                if (!isTargetTrackable(
+                        vehicle,
                         target,
                         atSecond
                     )
@@ -278,58 +332,73 @@ object ServicingVehicleNavigation {
 
                 } else {
 
-                    val targetPosition =
-                        OrbitalDisplayGeometry.onOrbit(
-                            target.telemetry.orbitAngleDegrees,
-                            target.definition.orbitRadiusFraction
-                        )
+                    val formationTarget = formationPosition(
+                        requireNotNull(target)
+                    )
 
-                    val distance =
-                        vehicle.position.distanceTo(
-                            targetPosition
-                        )
+                    val distance = vehicle.position.distanceTo(
+                        formationTarget
+                    )
 
-                    if (
-                        distance <=
-                        TARGET_STANDOFF + POSITION_EPSILON
-                    ) {
+                    if (distance <= FORMATION_TOLERANCE) {
 
                         vehicle.copy(
-                            phase = ServicingVehiclePhase.HOLDING,
-                            holdReason =
-                                VehicleHoldReason.TARGET_STANDOFF
+                            phase =
+                                ServicingVehiclePhase.FORMATION_FOLLOWING,
+                            position = formationTarget,
+                            holdReason = null
                         )
 
                     } else {
 
-                        val step = minOf(
-                            APPROACH_STEP,
-                            distance - TARGET_STANDOFF
-                        )
-
                         val next = moveToward(
                             from = vehicle.position,
-                            to = targetPosition,
-                            maxStep = step
+                            to = formationTarget,
+                            maxStep = APPROACH_STEP
                         )
 
-                        val arrived =
-                            next.distanceTo(targetPosition) <=
-                                    TARGET_STANDOFF +
-                                    POSITION_EPSILON
+                        val inFormation =
+                            next.distanceTo(formationTarget) <=
+                                    FORMATION_TOLERANCE
 
                         vehicle.copy(
-                            position = next,
-                            phase = if (arrived)
-                                ServicingVehiclePhase.HOLDING
+                            position = if (inFormation)
+                                formationTarget
+                            else
+                                next,
+                            phase = if (inFormation)
+                                ServicingVehiclePhase.FORMATION_FOLLOWING
                             else
                                 ServicingVehiclePhase.APPROACHING,
-                            holdReason = if (arrived)
-                                VehicleHoldReason.TARGET_STANDOFF
-                            else
-                                null
+                            holdReason = null
                         )
                     }
+                }
+            }
+
+            ServicingVehiclePhase.FORMATION_FOLLOWING -> {
+
+                if (!isTargetTrackable(
+                        vehicle,
+                        target,
+                        atSecond
+                    )
+                ) {
+
+                    vehicle.copy(
+                        phase = ServicingVehiclePhase.HOLDING,
+                        holdReason =
+                            VehicleHoldReason.TELEMETRY_UNAVAILABLE
+                    )
+
+                } else {
+
+                    vehicle.copy(
+                        position = formationPosition(
+                            requireNotNull(target)
+                        ),
+                        holdReason = null
+                    )
                 }
             }
 
@@ -359,8 +428,23 @@ object ServicingVehicleNavigation {
     }
 
     /**
-     * Moves a point toward another point without
-     * exceeding the permitted single-step distance.
+     * Verifies that the assigned target is available
+     * for current orbital formation guidance.
+     */
+    private fun isTargetTrackable(
+        vehicle: ServicingVehicleState,
+        target: SatelliteState?,
+        atSecond: Int
+    ): Boolean {
+
+        return target != null &&
+                vehicle.targetSatelliteId == target.definition.id &&
+                hasCurrentTargetTelemetry(target, atSecond)
+    }
+
+    /**
+     * Moves toward a target position while limiting
+     * travel to a fixed schematic distance per step.
      */
     private fun moveToward(
         from: VehiclePosition,
@@ -370,21 +454,15 @@ object ServicingVehicleNavigation {
 
         val distance = from.distanceTo(to)
 
-        if (
-            distance <= maxStep ||
-            distance <= POSITION_EPSILON
-        ) {
+        if (distance <= maxStep) {
             return to
         }
 
         val fraction = maxStep / distance
 
         return VehiclePosition(
-            x = from.x +
-                    (to.x - from.x) * fraction,
-            y = from.y +
-                    (to.y - from.y) * fraction
+            x = from.x + (to.x - from.x) * fraction,
+            y = from.y + (to.y - from.y) * fraction
         )
     }
 }
-

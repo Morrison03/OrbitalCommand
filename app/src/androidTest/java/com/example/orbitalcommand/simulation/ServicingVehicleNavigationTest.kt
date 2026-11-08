@@ -13,16 +13,16 @@ import com.example.orbitalcommand.model.ServicingMissionPlan
 import com.example.orbitalcommand.model.ServicingVehiclePhase
 import com.example.orbitalcommand.model.ServicingVehicleState
 import com.example.orbitalcommand.model.VehicleHoldReason
-import com.example.orbitalcommand.model.VehiclePosition
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.hypot
 
 /**
- * Verifies servicing vehicle deployment,
- * navigation eligibility, approach, hold,
- * return, and docking behavior.
+ * Verifies servicing vehicle deployment, approach,
+ * synchronized formation following, telemetry safety,
+ * return navigation, and docking behavior.
  */
 class ServicingVehicleNavigationTest {
 
@@ -33,19 +33,18 @@ class ServicingVehicleNavigationTest {
         OrbitalServicing.stationAt(0)
 
     /**
-     * Creates a satellite target with persistent
-     * solar array damage.
+     * Creates a satellite with persistent equipment
+     * damage for navigation testing.
      */
     private fun target(
         sampleSecond: Int = 0,
         connected: Boolean = true
     ): SatelliteState {
 
-        val telemetry =
-            SatelliteSimulator.snapshot(
-                second = sampleSecond,
-                satellite = definition
-            )
+        val telemetry = SatelliteSimulator.snapshot(
+            second = sampleSecond,
+            satellite = definition
+        )
 
         return SatelliteState(
             definition = definition,
@@ -61,8 +60,7 @@ class ServicingVehicleNavigationTest {
     }
 
     /**
-     * Creates a queued repair work order
-     * for the test target.
+     * Creates an eligible queued maintenance order.
      */
     private fun queuedOrder(): RepairWorkOrder {
 
@@ -77,7 +75,8 @@ class ServicingVehicleNavigationTest {
     }
 
     /**
-     * Creates a mission plan for the queued order.
+     * Creates a mission plan targeting the
+     * queued repair work order.
      */
     private fun plan(): ServicingMissionPlan {
 
@@ -92,8 +91,7 @@ class ServicingVehicleNavigationTest {
     }
 
     /**
-     * Creates a servicing vehicle docked
-     * at the initial station location.
+     * Creates an unassigned vehicle docked at OS-001.
      */
     private fun dockedVehicle(): ServicingVehicleState {
 
@@ -101,11 +99,62 @@ class ServicingVehicleNavigationTest {
     }
 
     /**
-     * Verifies that the initial vehicle
-     * is docked and has no assigned mission.
+     * Creates a vehicle beginning its guided approach.
+     */
+    private fun approachingVehicle(): ServicingVehicleState {
+
+        val deployed = ServicingVehicleNavigation.dispatch(
+            vehicle = dockedVehicle(),
+            plan = plan(),
+            station = station
+        )
+
+        return ServicingVehicleNavigation.beginApproach(
+            vehicle = deployed,
+            target = target(),
+            atSecond = 0
+        )
+    }
+
+    /**
+     * Advances scripted approach until the vehicle
+     * establishes formation with the moving satellite.
+     *
+     * Returns the vehicle and the simulation second
+     * at which formation was established.
+     */
+    private fun reachFormation():
+            Pair<ServicingVehicleState, Int> {
+
+        var vehicle = approachingVehicle()
+
+        for (second in 1..120) {
+
+            vehicle = ServicingVehicleNavigation.advance(
+                vehicle = vehicle,
+                station = OrbitalServicing.stationAt(second),
+                target = target(sampleSecond = second),
+                atSecond = second
+            )
+
+            if (
+                vehicle.phase ==
+                ServicingVehiclePhase.FORMATION_FOLLOWING
+            ) {
+                return vehicle to second
+            }
+        }
+
+        error(
+            "Vehicle did not establish formation."
+        )
+    }
+
+    /**
+     * Verifies the initial vehicle state.
      */
     @Test
-    fun newVehicleStartsDocked() {
+    fun vehicleStartsDocked() {
 
         val vehicle = dockedVehicle()
 
@@ -120,34 +169,42 @@ class ServicingVehicleNavigationTest {
     }
 
     /**
-     * Verifies that a docked vehicle
-     * follows its moving home station.
+     * Confirms that a docked vehicle follows
+     * its independently moving home station.
      */
     @Test
     fun dockedVehicleFollowsStation() {
 
-        val vehicle = dockedVehicle()
         val nextStation = OrbitalServicing.stationAt(10)
 
         val updated = ServicingVehicleNavigation.advance(
-            vehicle = vehicle,
+            vehicle = dockedVehicle(),
             station = nextStation,
             target = null,
             atSecond = 10
         )
 
         val expected = OrbitalDisplayGeometry.onOrbit(
-            nextStation.orbitAngleDegrees,
-            nextStation.orbitRadiusFraction
+            angleDegrees = nextStation.orbitAngleDegrees,
+            radiusFraction = nextStation.orbitRadiusFraction
         )
 
-        assertEquals(expected.x, updated.position.x, 0.0001f)
-        assertEquals(expected.y, updated.position.y, 0.0001f)
+        assertEquals(
+            expected.x,
+            updated.position.x,
+            0.0001f
+        )
+
+        assertEquals(
+            expected.y,
+            updated.position.y,
+            0.0001f
+        )
     }
 
     /**
-     * Confirms that the vehicle receives
-     * the prepared mission on deployment.
+     * Verifies that dispatch assigns the correct
+     * maintenance mission to the vehicle.
      */
     @Test
     fun dispatchAssignsVehicleMission() {
@@ -164,13 +221,21 @@ class ServicingVehicleNavigationTest {
         )
 
         assertTrue(deployed.isAwayFromStation)
-        assertEquals(1L, deployed.workOrderId)
-        assertEquals(definition.id, deployed.targetSatelliteId)
+
+        assertEquals(
+            1L,
+            deployed.workOrderId
+        )
+
+        assertEquals(
+            definition.id,
+            deployed.targetSatelliteId
+        )
     }
 
     /**
      * Prevents a second deployment while
-     * the vehicle is already away from OS-001.
+     * the vehicle is already deployed.
      */
     @Test(expected = IllegalArgumentException::class)
     fun deployedVehicleCannotBeDispatchedAgain() {
@@ -189,132 +254,160 @@ class ServicingVehicleNavigationTest {
     }
 
     /**
-     * Verifies that queued repair work
-     * and current telemetry permit dispatch.
+     * Verifies that a valid queued repair and
+     * current target telemetry permit dispatch.
      */
     @Test
     fun validQueuedRepairAllowsDispatch() {
 
-        val ready = ServicingVehicleNavigation.isDispatchReady(
-            plan = plan(),
-            orders = listOf(queuedOrder()),
-            satellites = listOf(target()),
-            atSecond = 0
+        assertTrue(
+            ServicingVehicleNavigation.isDispatchReady(
+                plan = plan(),
+                orders = listOf(queuedOrder()),
+                satellites = listOf(target()),
+                atSecond = 0
+            )
         )
-
-        assertTrue(ready)
     }
 
     /**
-     * Ensures that an open work order
-     * cannot be dispatched.
+     * Prevents dispatching an unqueued repair order.
      */
     @Test
-    fun unqueuedWorkOrderBlocksDispatch() {
+    fun unqueuedRepairBlocksDispatch() {
 
         val openOrder = queuedOrder().copy(
             status = RepairStatus.OPEN,
             queuedAtSecond = null
         )
 
-        val ready = ServicingVehicleNavigation.isDispatchReady(
-            plan = plan(),
-            orders = listOf(openOrder),
-            satellites = listOf(target()),
-            atSecond = 0
+        assertFalse(
+            ServicingVehicleNavigation.isDispatchReady(
+                plan = plan(),
+                orders = listOf(openOrder),
+                satellites = listOf(target()),
+                atSecond = 0
+            )
         )
-
-        assertFalse(ready)
     }
 
     /**
-     * Ensures that target communication loss
-     * prevents dispatch.
+     * Prevents dispatch when received target
+     * telemetry is unavailable.
      */
     @Test
     fun disconnectedTargetBlocksDispatch() {
 
-        val ready = ServicingVehicleNavigation.isDispatchReady(
-            plan = plan(),
-            orders = listOf(queuedOrder()),
-            satellites = listOf(
-                target(connected = false)
-            ),
-            atSecond = 0
+        assertFalse(
+            ServicingVehicleNavigation.isDispatchReady(
+                plan = plan(),
+                orders = listOf(queuedOrder()),
+                satellites = listOf(
+                    target(connected = false)
+                ),
+                atSecond = 0
+            )
         )
-
-        assertFalse(ready)
     }
 
     /**
-     * Ensures that outdated target telemetry
-     * prevents dispatch.
+     * Prevents dispatch using excessively old
+     * target position information.
      */
     @Test
     fun staleTelemetryBlocksDispatch() {
 
-        val ready = ServicingVehicleNavigation.isDispatchReady(
-            plan = plan(),
-            orders = listOf(queuedOrder()),
-            satellites = listOf(target(sampleSecond = 0)),
-            atSecond = 20
+        assertFalse(
+            ServicingVehicleNavigation.isDispatchReady(
+                plan = plan(),
+                orders = listOf(queuedOrder()),
+                satellites = listOf(
+                    target(sampleSecond = 0)
+                ),
+                atSecond = 20
+            )
         )
-
-        assertFalse(ready)
     }
 
     /**
-     * Verifies that approach transitions the
-     * vehicle into a moving navigation state.
+     * Verifies that the formation position lies
+     * on the target satellite's orbital track.
+     */
+    @Test
+    fun formationPositionUsesSatelliteOrbit() {
+
+        val spacecraft = target()
+
+        val formation =
+            ServicingVehicleNavigation.formationPosition(
+                spacecraft
+            )
+
+        val radius = hypot(
+            formation.x,
+            formation.y
+        )
+
+        assertEquals(
+            spacecraft.definition.orbitRadiusFraction,
+            radius,
+            0.0001f
+        )
+    }
+
+    /**
+     * Confirms that formation following maintains
+     * the configured separation from the satellite.
+     */
+    @Test
+    fun formationPositionMaintainsSeparation() {
+
+        val spacecraft = target()
+
+        val satellitePosition =
+            OrbitalDisplayGeometry.onOrbit(
+                spacecraft.telemetry.orbitAngleDegrees,
+                spacecraft.definition.orbitRadiusFraction
+            )
+
+        val formation =
+            ServicingVehicleNavigation.formationPosition(
+                spacecraft
+            )
+
+        assertEquals(
+            ServicingVehicleNavigation.FORMATION_SEPARATION,
+            formation.distanceTo(satellitePosition),
+            0.0001f
+        )
+    }
+
+    /**
+     * Verifies that beginning approach changes
+     * the vehicle into the approaching phase.
      */
     @Test
     fun approachBeginsAfterDeployment() {
 
-        val deployed = ServicingVehicleNavigation.dispatch(
-            dockedVehicle(),
-            plan(),
-            station
-        )
-
-        val approaching =
-            ServicingVehicleNavigation.beginApproach(
-                vehicle = deployed,
-                target = target(),
-                atSecond = 0
-            )
-
         assertEquals(
             ServicingVehiclePhase.APPROACHING,
-            approaching.phase
+            approachingVehicle().phase
         )
     }
 
     /**
-     * Verifies that a scripted approach
-     * changes the vehicle's schematic position.
+     * Confirms that scripted approach moves
+     * toward the satellite's formation position.
      */
     @Test
-    fun approachMovesTowardTarget() {
+    fun approachChangesVehiclePosition() {
 
-        val deployed = ServicingVehicleNavigation.dispatch(
-            dockedVehicle(),
-            plan(),
-            station
-        )
-
-        val approaching =
-            ServicingVehicleNavigation.beginApproach(
-                deployed,
-                target(),
-                0
-            )
-
-        val nextTarget = target(sampleSecond = 1)
+        val approaching = approachingVehicle()
 
         val updated = ServicingVehicleNavigation.advance(
             vehicle = approaching,
             station = OrbitalServicing.stationAt(1),
-            target = nextTarget,
+            target = target(sampleSecond = 1),
             atSecond = 1
         )
 
@@ -324,27 +417,131 @@ class ServicingVehicleNavigationTest {
     }
 
     /**
-     * Confirms that an operator-requested hold
-     * stops the vehicle without ending its mission.
+     * Confirms that reaching the satellite causes
+     * formation following rather than a stationary hold.
      */
     @Test
-    fun operatorHoldStopsApproach() {
+    fun reachingSatelliteStartsFormationFollowing() {
 
-        val deployed = ServicingVehicleNavigation.dispatch(
-            dockedVehicle(),
-            plan(),
-            station
+        val (vehicle, _) = reachFormation()
+
+        assertEquals(
+            ServicingVehiclePhase.FORMATION_FOLLOWING,
+            vehicle.phase
         )
 
-        val approaching =
-            ServicingVehicleNavigation.beginApproach(
-                deployed,
-                target(),
-                0
+        assertEquals(
+            null,
+            vehicle.holdReason
+        )
+    }
+
+    /**
+     * Verifies that the servicing vehicle continues
+     * orbiting as its target satellite moves.
+     */
+    @Test
+    fun formationFollowingMovesWithSatellite() {
+
+        val (initialVehicle, formedAt) = reachFormation()
+
+        val nextSecond = formedAt + 1
+
+        val spacecraft = target(
+            sampleSecond = nextSecond
+        )
+
+        val updated = ServicingVehicleNavigation.advance(
+            vehicle = initialVehicle,
+            station = OrbitalServicing.stationAt(nextSecond),
+            target = spacecraft,
+            atSecond = nextSecond
+        )
+
+        assertEquals(
+            ServicingVehiclePhase.FORMATION_FOLLOWING,
+            updated.phase
+        )
+
+        assertTrue(
+            updated.position != initialVehicle.position
+        )
+
+        val expected =
+            ServicingVehicleNavigation.formationPosition(
+                spacecraft
             )
 
-        val holding =
-            ServicingVehicleNavigation.hold(approaching)
+        assertEquals(
+            expected.x,
+            updated.position.x,
+            0.0001f
+        )
+
+        assertEquals(
+            expected.y,
+            updated.position.y,
+            0.0001f
+        )
+    }
+
+    /**
+     * Verifies that separation remains constant
+     * throughout multiple satellite orbital updates.
+     */
+    @Test
+    fun formationSeparationRemainsStableOverTime() {
+
+        val (formedVehicle, formedAt) = reachFormation()
+
+        var vehicle = formedVehicle
+
+        for (second in formedAt + 1..formedAt + 20) {
+
+            val spacecraft = target(
+                sampleSecond = second
+            )
+
+            vehicle = ServicingVehicleNavigation.advance(
+                vehicle = vehicle,
+                station = OrbitalServicing.stationAt(second),
+                target = spacecraft,
+                atSecond = second
+            )
+
+            val satellitePosition =
+                OrbitalDisplayGeometry.onOrbit(
+                    spacecraft.telemetry.orbitAngleDegrees,
+                    spacecraft.definition.orbitRadiusFraction
+                )
+
+            assertEquals(
+                ServicingVehicleNavigation.FORMATION_SEPARATION,
+                vehicle.position.distanceTo(
+                    satellitePosition
+                ),
+                0.001f
+            )
+
+            assertEquals(
+                ServicingVehiclePhase.FORMATION_FOLLOWING,
+                vehicle.phase
+            )
+        }
+    }
+
+    /**
+     * Confirms that the operator can explicitly
+     * pause the scripted approach.
+     */
+    @Test
+    fun operatorCanPauseApproach() {
+
+        val approaching = approachingVehicle()
+
+        val holding = ServicingVehicleNavigation.hold(
+            approaching
+        )
 
         val updated = ServicingVehicleNavigation.advance(
             vehicle = holding,
@@ -367,29 +564,16 @@ class ServicingVehicleNavigationTest {
             holding.position,
             updated.position
         )
-
-        assertEquals(1L, updated.workOrderId)
     }
 
     /**
-     * Confirms that target communication loss
-     * automatically stops scripted approach.
+     * Verifies that losing target communication
+     * during approach suspends automatic guidance.
      */
     @Test
-    fun lostTelemetryAutomaticallyHoldsVehicle() {
+    fun lostTelemetryStopsApproach() {
 
-        val deployed = ServicingVehicleNavigation.dispatch(
-            dockedVehicle(),
-            plan(),
-            station
-        )
-
-        val approaching =
-            ServicingVehicleNavigation.beginApproach(
-                deployed,
-                target(),
-                0
-            )
+        val approaching = approachingVehicle()
 
         val updated = ServicingVehicleNavigation.advance(
             vehicle = approaching,
@@ -410,27 +594,52 @@ class ServicingVehicleNavigationTest {
             VehicleHoldReason.TELEMETRY_UNAVAILABLE,
             updated.holdReason
         )
+    }
+
+    /**
+     * Verifies that a formation-following vehicle
+     * suspends navigation when telemetry is lost.
+     */
+    @Test
+    fun lostTelemetrySuspendsFormationFollowing() {
+
+        val (following, formedAt) = reachFormation()
+
+        val updated = ServicingVehicleNavigation.advance(
+            vehicle = following,
+            station = OrbitalServicing.stationAt(formedAt + 1),
+            target = target(
+                sampleSecond = formedAt,
+                connected = false
+            ),
+            atSecond = formedAt + 1
+        )
 
         assertEquals(
-            approaching.position,
+            ServicingVehiclePhase.HOLDING,
+            updated.phase
+        )
+
+        assertEquals(
+            VehicleHoldReason.TELEMETRY_UNAVAILABLE,
+            updated.holdReason
+        )
+
+        assertEquals(
+            following.position,
             updated.position
         )
     }
 
     /**
-     * Prevents resuming guidance while
-     * target communications are unavailable.
+     * Prevents guidance from resuming while
+     * target telemetry remains unavailable.
      */
     @Test(expected = IllegalArgumentException::class)
-    fun cannotResumeWithoutTargetTelemetry() {
+    fun cannotResumeWithoutTelemetry() {
 
-        val holding = ServicingVehicleNavigation.dispatch(
-            dockedVehicle(),
-            plan(),
-            station
-        ).copy(
-            phase = ServicingVehiclePhase.HOLDING,
-            holdReason = VehicleHoldReason.TELEMETRY_UNAVAILABLE
+        val holding = ServicingVehicleNavigation.hold(
+            approachingVehicle()
         )
 
         ServicingVehicleNavigation.resumeApproach(
@@ -441,68 +650,96 @@ class ServicingVehicleNavigationTest {
     }
 
     /**
-     * Verifies that approaching a target does not
-     * remove its persistent equipment damage.
+     * Confirms that guidance can resume once
+     * the satellite's telemetry becomes available.
      */
     @Test
-    fun targetStandoffDoesNotCompleteRepair() {
+    fun restoredTelemetryAllowsApproachToResume() {
 
-        val spacecraft = target()
-
-        val targetPosition = OrbitalDisplayGeometry.onOrbit(
-            spacecraft.telemetry.orbitAngleDegrees,
-            spacecraft.definition.orbitRadiusFraction
+        val holding = ServicingVehicleNavigation.hold(
+            approachingVehicle()
         )
 
-        val nearbyVehicle = ServicingVehicleNavigation.dispatch(
-            dockedVehicle(),
-            plan(),
-            station
-        ).copy(
-            phase = ServicingVehiclePhase.APPROACHING,
-            position = VehiclePosition(
-                x = targetPosition.x + 0.065f,
-                y = targetPosition.y
+        val resumed =
+            ServicingVehicleNavigation.resumeApproach(
+                vehicle = holding,
+                target = target(sampleSecond = 2),
+                atSecond = 2
             )
-        )
 
-        val updated = ServicingVehicleNavigation.advance(
-            vehicle = nearbyVehicle,
-            station = station,
-            target = spacecraft,
-            atSecond = 0
+        assertEquals(
+            ServicingVehiclePhase.APPROACHING,
+            resumed.phase
         )
 
         assertEquals(
-            ServicingVehiclePhase.HOLDING,
-            updated.phase
+            null,
+            resumed.holdReason
         )
-
-        assertEquals(
-            VehicleHoldReason.TARGET_STANDOFF,
-            updated.holdReason
-        )
-
-        assertTrue(spacecraft.requiresServicing)
     }
 
     /**
-     * Confirms the vehicle can return to a
-     * moving servicing station and dock.
+     * Verifies that formation following does
+     * not automatically repair damaged equipment.
+     */
+    @Test
+    fun formationFollowingDoesNotCompleteRepair() {
+
+        val spacecraft = target()
+        val order = queuedOrder()
+
+        val (vehicle, _) = reachFormation()
+
+        assertEquals(
+            ServicingVehiclePhase.FORMATION_FOLLOWING,
+            vehicle.phase
+        )
+
+        assertTrue(
+            spacecraft.requiresServicing
+        )
+
+        assertEquals(
+            RepairStatus.QUEUED,
+            order.status
+        )
+    }
+
+    /**
+     * Verifies that the servicing vehicle can begin
+     * returning directly from formation following.
+     */
+    @Test
+    fun vehicleCanReturnFromFormation() {
+
+        val (following, _) = reachFormation()
+
+        val returning =
+            ServicingVehicleNavigation.beginReturn(
+                following
+            )
+
+        assertEquals(
+            ServicingVehiclePhase.RETURNING,
+            returning.phase
+        )
+    }
+
+    /**
+     * Confirms that return guidance eventually
+     * docks the vehicle at its moving home station.
      */
     @Test
     fun returningVehicleEventuallyDocks() {
 
-        val deployed = ServicingVehicleNavigation.dispatch(
-            dockedVehicle(),
-            plan(),
-            station
-        )
+        val (following, formedAt) = reachFormation()
 
         var vehicle =
-            ServicingVehicleNavigation.beginReturn(deployed)
+            ServicingVehicleNavigation.beginReturn(
+                following
+            )
 
-        for (second in 1..60) {
+        for (second in formedAt + 1..formedAt + 120) {
 
             vehicle = ServicingVehicleNavigation.advance(
                 vehicle = vehicle,
@@ -512,7 +749,8 @@ class ServicingVehicleNavigationTest {
             )
 
             if (
-                vehicle.phase == ServicingVehiclePhase.DOCKED
+                vehicle.phase ==
+                ServicingVehiclePhase.DOCKED
             ) {
                 break
             }
@@ -523,14 +761,24 @@ class ServicingVehicleNavigationTest {
             vehicle.phase
         )
 
-        assertFalse(vehicle.isAwayFromStation)
-        assertEquals(null, vehicle.workOrderId)
-        assertEquals(null, vehicle.targetSatelliteId)
+        assertFalse(
+            vehicle.isAwayFromStation
+        )
+
+        assertEquals(
+            null,
+            vehicle.workOrderId
+        )
+
+        assertEquals(
+            null,
+            vehicle.targetSatelliteId
+        )
     }
 
     /**
-     * A docked vehicle cannot start
-     * a return operation.
+     * Prevents a docked vehicle from
+     * starting an unnecessary return.
      */
     @Test(expected = IllegalArgumentException::class)
     fun dockedVehicleCannotBeginReturn() {
@@ -540,4 +788,3 @@ class ServicingVehicleNavigationTest {
         )
     }
 }
-
