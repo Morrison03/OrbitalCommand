@@ -1,9 +1,20 @@
 
 package com.example.orbitalcommand.ui
 
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.*
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -22,12 +33,12 @@ import com.example.orbitalcommand.ui.theme.OrbitalColors
 import java.util.Locale
 
 /**
- * Displays station status, prepared missions,
- * and scripted servicing vehicle controls.
+ * Displays the orbital servicing station, maintenance
+ * mission details, and servicing vehicle controls.
  *
- * After approaching a satellite, the vehicle enters
- * formation following and continues moving with its
- * target at a fixed schematic separation.
+ * A repair completed during formation following leaves
+ * the vehicle deployed until the operator commands
+ * its return to OS-001.
  */
 @Composable
 fun ServicingMissionPanel(
@@ -49,6 +60,13 @@ fun ServicingMissionPanel(
     val queuedOrders = state.activeRepairOrders.filter {
         it.status == RepairStatus.QUEUED
     }
+
+    val missionOrder = state.repairOrders.firstOrNull {
+        it.id == plan?.workOrderId
+    }
+
+    val repairCompleted =
+        missionOrder?.status == RepairStatus.COMPLETED
 
     val target = state.satellites.firstOrNull {
         it.definition.id == plan?.targetSatelliteId
@@ -216,6 +234,18 @@ fun ServicingMissionPanel(
                 )
 
                 DetailRow(
+                    label = "Repair status",
+                    value = if (repairCompleted)
+                        "COMPLETED"
+                    else
+                        "PENDING",
+                    valueColor = if (repairCompleted)
+                        OrbitalColors.Healthy
+                    else
+                        Color(0xFFFBBF24)
+                )
+
+                DetailRow(
                     label = "Prepared at",
                     value = "T+${plan.preparedAtSecond}s"
                 )
@@ -236,7 +266,7 @@ fun ServicingMissionPanel(
 
                     Text(
                         text = "Target telemetry required verification " +
-                                "when this mission was prepared. " +
+                                "at mission preparation. " +
                                 "Current telemetry is checked again " +
                                 "before dispatch and approach.",
                         color = Color(0xFFFBBF24),
@@ -285,7 +315,6 @@ fun ServicingMissionPanel(
                     },
                     modifier = Modifier.fillMaxWidth()
                 ) {
-
                     Text("Inspect Target Satellite")
                 }
 
@@ -298,16 +327,15 @@ fun ServicingMissionPanel(
                             enabled = dispatchReady,
                             modifier = Modifier.fillMaxWidth()
                         ) {
-
                             Text("Dispatch Servicing Vehicle")
                         }
 
                         if (!dispatchReady) {
 
                             Text(
-                                text = "Dispatch requires a queued repair, " +
-                                        "matching damage, and current " +
-                                        "target telemetry.",
+                                text = "Dispatch requires matching " +
+                                        "equipment damage, a queued repair, " +
+                                        "and current target telemetry.",
                                 color = OrbitalColors.Warning,
                                 fontSize = 12.sp
                             )
@@ -317,7 +345,6 @@ fun ServicingMissionPanel(
                             onClick = onCancelMission,
                             modifier = Modifier.fillMaxWidth()
                         ) {
-
                             Text("Cancel Mission Preparation")
                         }
                     }
@@ -329,16 +356,14 @@ fun ServicingMissionPanel(
                             enabled = targetVerified,
                             modifier = Modifier.fillMaxWidth()
                         ) {
-
                             Text("Begin Guided Approach")
                         }
 
                         if (!targetVerified) {
 
                             Text(
-                                text = "Guided movement requires current " +
-                                        "target telemetry. Returning to the " +
-                                        "station is still available.",
+                                text = "Guidance requires current target " +
+                                        "telemetry. Return is still available.",
                                 color = OrbitalColors.Warning,
                                 fontSize = 12.sp
                             )
@@ -351,8 +376,7 @@ fun ServicingMissionPanel(
 
                         Text(
                             text = "Approaching the target's moving " +
-                                    "formation position. Formation " +
-                                    "following begins automatically.",
+                                    "formation position.",
                             color = OrbitalColors.Accent,
                             fontSize = 12.sp
                         )
@@ -361,7 +385,6 @@ fun ServicingMissionPanel(
                             onClick = onHoldVehicle,
                             modifier = Modifier.fillMaxWidth()
                         ) {
-
                             Text("Pause Guided Approach")
                         }
 
@@ -378,11 +401,9 @@ fun ServicingMissionPanel(
                         )
 
                         Text(
-                            text = "SERVICER-01 is now orbiting " +
-                                    "alongside ${plan.targetSatelliteId}. " +
-                                    "It maintains a fixed position behind " +
-                                    "the satellite and follows its orbital " +
-                                    "movement automatically.",
+                            text = "SERVICER-01 is orbiting alongside " +
+                                    "${plan.targetSatelliteId}, maintaining " +
+                                    "a fixed schematic separation.",
                             color = Color.White,
                             fontSize = 12.sp
                         )
@@ -398,20 +419,43 @@ fun ServicingMissionPanel(
                             valueColor = OrbitalColors.Healthy
                         )
 
-                        Text(
-                            text = "The vehicle will continue following " +
-                                    "until you command a return or target " +
-                                    "telemetry becomes unavailable.",
-                            color = OrbitalColors.Muted,
-                            fontSize = 12.sp
-                        )
+                        if (repairCompleted) {
 
-                        Text(
-                            text = "The equipment repair has not yet " +
-                                    "been performed.",
-                            color = Color(0xFFFBBF24),
-                            fontSize = 12.sp
-                        )
+                            Text(
+                                text = "REPAIR COMPLETE — " +
+                                        "RETURN TO STATION",
+                                color = OrbitalColors.Healthy,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+
+                            Text(
+                                text = "The simulated equipment repair " +
+                                        "has been completed. SERVICER-01 " +
+                                        "continues following the satellite " +
+                                        "until you command its return.",
+                                color = Color.White,
+                                fontSize = 12.sp
+                            )
+
+                        } else {
+
+                            Text(
+                                text = "REPAIR READY",
+                                color = OrbitalColors.Accent,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+
+                            Text(
+                                text = "Open Satellite Repair Operations " +
+                                        "and select Simulate Repair Completion. " +
+                                        "Returning to OS-001 is not required " +
+                                        "before this action.",
+                                color = Color.White,
+                                fontSize = 12.sp
+                            )
+                        }
 
                         ReturnButton(onReturnVehicle)
                     }
@@ -423,26 +467,33 @@ fun ServicingMissionPanel(
                                 vehicle.holdReason ==
                                 VehicleHoldReason.TELEMETRY_UNAVAILABLE
                             ) {
-
-                                "Automatic navigation was suspended " +
-                                        "because the target's position " +
-                                        "cannot be verified."
-
+                                "Automatic tracking is suspended " +
+                                        "because target telemetry " +
+                                        "is unavailable."
                             } else {
-
-                                "The scripted approach has been paused " +
-                                        "by the operator."
+                                "The operator paused " +
+                                        "scripted navigation."
                             },
                             color = Color(0xFFFBBF24),
                             fontSize = 12.sp
                         )
+
+                        if (repairCompleted) {
+
+                            Text(
+                                text = "Repair already completed. " +
+                                        "You can resume tracking or " +
+                                        "return to OS-001.",
+                                color = OrbitalColors.Healthy,
+                                fontSize = 12.sp
+                            )
+                        }
 
                         Button(
                             onClick = onResumeApproach,
                             enabled = targetVerified,
                             modifier = Modifier.fillMaxWidth()
                         ) {
-
                             Text("Resume Guided Approach")
                         }
 
@@ -452,9 +503,14 @@ fun ServicingMissionPanel(
                     ServicingVehiclePhase.RETURNING -> {
 
                         Text(
-                            text = "SERVICER-01 is returning toward " +
-                                    "the moving OS-001 station. " +
-                                    "Docking occurs automatically.",
+                            text = if (repairCompleted) {
+                                "Repair completed. SERVICER-01 " +
+                                        "is returning to OS-001. " +
+                                        "The mission will close at docking."
+                            } else {
+                                "SERVICER-01 is returning to OS-001. " +
+                                        "The repair order remains queued."
+                            },
                             color = OrbitalColors.Accent,
                             fontSize = 12.sp
                         )
@@ -476,9 +532,7 @@ fun ServicingMissionPanel(
             if (queuedOrders.isEmpty()) {
 
                 Text(
-                    text = "No queued repairs are available. " +
-                            "Create equipment damage and queue " +
-                            "its work order in Repair Operations.",
+                    text = "No queued repair requests are available.",
                     color = OrbitalColors.Muted,
                     fontSize = 12.sp
                 )
@@ -502,10 +556,9 @@ fun ServicingMissionPanel(
             }
 
             Text(
-                text = "Formation following uses simplified " +
-                        "two-dimensional orbital coordinates. " +
-                        "It does not represent actual spacecraft " +
-                        "docking or orbital mechanics.",
+                text = "Repair completion and orbital formation " +
+                        "are simplified simulations, not validated " +
+                        "spacecraft servicing procedures.",
                 color = OrbitalColors.Muted,
                 fontSize = 11.sp
             )
@@ -514,8 +567,8 @@ fun ServicingMissionPanel(
 }
 
 /**
- * Displays the command for returning the
- * vehicle to its home servicing station.
+ * Displays the command that sends the vehicle
+ * back toward the orbital servicing station.
  */
 @Composable
 private fun ReturnButton(
@@ -526,14 +579,13 @@ private fun ReturnButton(
         onClick = onReturnVehicle,
         modifier = Modifier.fillMaxWidth()
     ) {
-
         Text("Return to Servicing Station")
     }
 }
 
 /**
- * Displays a queued maintenance work order
- * available for mission preparation.
+ * Displays one queued repair request
+ * eligible for servicing mission preparation.
  */
 @Composable
 private fun ServicingRequestCard(
@@ -546,7 +598,8 @@ private fun ServicingRequestCard(
     Card(
         colors = CardDefaults.cardColors(
             containerColor = OrbitalColors.PanelRaised
-        )
+        ),
+        shape = RoundedCornerShape(12.dp)
     ) {
 
         Column(
@@ -611,8 +664,8 @@ private fun ServicingRequestCard(
 }
 
 /**
- * Displays a labeled value in
- * the servicing operations interface.
+ * Displays one labeled value within
+ * the servicing mission interface.
  */
 @Composable
 private fun DetailRow(

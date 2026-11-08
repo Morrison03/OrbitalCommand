@@ -2,10 +2,22 @@
 package com.example.orbitalcommand.ui
 
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.*
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -14,17 +26,19 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.orbitalcommand.model.EquipmentDamage
 import com.example.orbitalcommand.model.OrbitalUiState
+import com.example.orbitalcommand.model.RepairCompletionPolicy
+import com.example.orbitalcommand.model.RepairCompletionStatus
 import com.example.orbitalcommand.model.RepairStatus
 import com.example.orbitalcommand.model.RepairWorkOrder
 import com.example.orbitalcommand.ui.theme.OrbitalColors
 
 /**
- * Displays persistent equipment damage and
- * fleet-wide maintenance work orders.
+ * Displays persistent satellite equipment damage,
+ * fleet-wide maintenance orders, and repair controls.
  *
- * A work order assigned to a deployed servicing
- * vehicle cannot be completed through the
- * test-only maintenance control.
+ * Repair availability is determined by the shared
+ * RepairCompletionPolicy, keeping the interface
+ * consistent with the ViewModel's validation.
  */
 @Composable
 fun RepairOperationsPanel(
@@ -41,9 +55,7 @@ fun RepairOperationsPanel(
         .sortedByDescending { it.id }
 
     val completedOrders = state.repairOrders
-        .filter {
-            it.status == RepairStatus.COMPLETED
-        }
+        .filter { it.status == RepairStatus.COMPLETED }
         .sortedByDescending { it.id }
         .take(3)
 
@@ -97,9 +109,7 @@ fun RepairOperationsPanel(
             ) {
 
                 EquipmentDamage.entries
-                    .filter {
-                        it != EquipmentDamage.NONE
-                    }
+                    .filter { it != EquipmentDamage.NONE }
                     .forEach { damage ->
 
                         FilterChip(
@@ -139,7 +149,7 @@ fun RepairOperationsPanel(
                 )
 
                 Text(
-                    text = "Temporary fault controls cannot " +
+                    text = "Clearing a temporary fault does not " +
                             "repair damaged equipment.",
                     color = OrbitalColors.Muted,
                     fontSize = 11.sp
@@ -179,16 +189,14 @@ fun RepairOperationsPanel(
 
                 activeOrders.forEach { order ->
 
-                    val vehicleAssignedAndAway =
-                        state.servicingVehicle
-                            .isAwayFromStation &&
-                                state.servicingVehicle
-                                    .workOrderId == order.id
+                    val readiness = RepairCompletionPolicy.evaluate(
+                        state = state,
+                        order = order
+                    )
 
                     RepairOrderCard(
                         order = order,
-                        completionAllowed =
-                            !vehicleAssignedAndAway,
+                        readiness = readiness,
                         onInspect = {
                             onSelectSatellite(order.satelliteId)
                         },
@@ -220,8 +228,8 @@ fun RepairOperationsPanel(
                     Text(
                         text = "#${order.id} • " +
                                 "${order.satelliteId} • " +
-                                order.damage.displayName +
-                                " • T+${order.completedAtSecond}s",
+                                "${order.damage.displayName} • " +
+                                "T+${order.completedAtSecond}s",
                         color = OrbitalColors.Healthy,
                         fontSize = 11.sp
                     )
@@ -229,10 +237,8 @@ fun RepairOperationsPanel(
             }
 
             Text(
-                text = "Repair completion remains a " +
-                        "simulation-only test action. " +
-                        "Approaching a satellite does not " +
-                        "repair its equipment.",
+                text = "Repair completion is simulated. " +
+                        "No physical hardware procedure is modeled.",
                 color = OrbitalColors.Muted,
                 fontSize = 11.sp
             )
@@ -241,13 +247,13 @@ fun RepairOperationsPanel(
 }
 
 /**
- * Displays an individual repair request
- * and the available maintenance actions.
+ * Displays the selected maintenance request and
+ * the actions currently available to the operator.
  */
 @Composable
 private fun RepairOrderCard(
     order: RepairWorkOrder,
-    completionAllowed: Boolean,
+    readiness: RepairCompletionStatus,
     onInspect: () -> Unit,
     onQueue: () -> Unit,
     onComplete: () -> Unit
@@ -259,7 +265,8 @@ private fun RepairOrderCard(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
             containerColor = OrbitalColors.PanelRaised
-        )
+        ),
+        shape = RoundedCornerShape(12.dp)
     ) {
 
         Column(
@@ -283,10 +290,7 @@ private fun RepairOrderCard(
                 )
 
                 Text(
-                    text = if (queued)
-                        "QUEUED"
-                    else
-                        "OPEN",
+                    text = if (queued) "QUEUED" else "OPEN",
                     color = if (queued)
                         OrbitalColors.Accent
                     else
@@ -331,7 +335,6 @@ private fun RepairOrderCard(
                 onClick = onInspect,
                 modifier = Modifier.fillMaxWidth()
             ) {
-
                 Text("Inspect Satellite")
             }
 
@@ -341,7 +344,6 @@ private fun RepairOrderCard(
                     onClick = onQueue,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-
                     Text("Queue Repair")
                 }
 
@@ -349,30 +351,33 @@ private fun RepairOrderCard(
 
                 Button(
                     onClick = onComplete,
-                    enabled = completionAllowed,
+                    enabled = readiness.isAllowed,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-
                     Text(
                         text = "Simulate Repair Completion",
                         fontSize = 12.sp
                     )
                 }
 
-                if (!completionAllowed) {
+                Text(
+                    text = readiness.description,
+                    color = if (readiness.isAllowed)
+                        OrbitalColors.Healthy
+                    else
+                        OrbitalColors.Warning,
+                    fontSize = 11.sp
+                )
+
+                if (
+                    readiness ==
+                    RepairCompletionStatus.READY_IN_FORMATION
+                ) {
 
                     Text(
-                        text = "Repair completion is disabled " +
-                                "while the assigned servicing vehicle " +
-                                "is away from OS-001.",
-                        color = OrbitalColors.Warning,
-                        fontSize = 12.sp
-                    )
-                } else {
-
-                    Text(
-                        text = "Test action: assumes successful " +
-                                "maintenance without robotic servicing.",
+                        text = "The vehicle will remain in " +
+                                "formation after completion. " +
+                                "Return it to OS-001 separately.",
                         color = OrbitalColors.Muted,
                         fontSize = 11.sp
                     )
