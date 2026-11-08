@@ -3,29 +3,7 @@ package com.example.orbitalcommand.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.orbitalcommand.model.EquipmentDamage
-import com.example.orbitalcommand.model.MissionEvent
-import com.example.orbitalcommand.model.MissionEventKind
-import com.example.orbitalcommand.model.MissionEventLog
-import com.example.orbitalcommand.model.MissionEventSeverity
-import com.example.orbitalcommand.model.OrbitalServicing
-import com.example.orbitalcommand.model.OrbitalUiState
-import com.example.orbitalcommand.model.PowerMode
-import com.example.orbitalcommand.model.RepairArmDirection
-import com.example.orbitalcommand.model.RepairCompletionPolicy
-import com.example.orbitalcommand.model.RepairCompletionStatus
-import com.example.orbitalcommand.model.RepairStatus
-import com.example.orbitalcommand.model.RepairTool
-import com.example.orbitalcommand.model.RepairWorkOrder
-import com.example.orbitalcommand.model.RepairWorkOrders
-import com.example.orbitalcommand.model.RoboticRepairSimulator
-import com.example.orbitalcommand.model.SatelliteCatalog
-import com.example.orbitalcommand.model.SatelliteFault
-import com.example.orbitalcommand.model.SatelliteState
-import com.example.orbitalcommand.model.SatelliteTelemetry
-import com.example.orbitalcommand.model.ServicingVehiclePhase
-import com.example.orbitalcommand.model.TelemetryHistory
-import com.example.orbitalcommand.model.VehicleHoldReason
+import com.example.orbitalcommand.model.*
 import com.example.orbitalcommand.simulation.SatelliteSimulator
 import com.example.orbitalcommand.simulation.ServicingVehicleNavigation
 import kotlinx.coroutines.delay
@@ -37,20 +15,23 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * Coordinates satellite monitoring, mission alerts,
- * robotic servicing operations, and maintenance records.
+ * Owns fleet telemetry, mission alerts, work orders,
+ * vehicle navigation, and interactive satellite servicing.
  *
- * Interactive repair actions require current telemetry
- * and verified formation with the assigned spacecraft.
- *
- * A completed repair does not automatically return the
- * vehicle to its orbital servicing station.
+ * The digital service view is a non-flight simulation.
+ * Only successful final verification completes an
+ * in-formation repair work order.
  */
 class OrbitalViewModel : ViewModel() {
 
     companion object {
-        private const val MANUAL_FAULT_SOURCE = "MANUAL_FAULT"
-        private const val POWER_STATUS_SOURCE = "POWER_STATUS"
+
+        private const val MANUAL_FAULT_SOURCE =
+            "MANUAL_FAULT"
+
+        private const val POWER_STATUS_SOURCE =
+            "POWER_STATUS"
+
         private const val EQUIPMENT_DAMAGE_SOURCE =
             "EQUIPMENT_DAMAGE"
     }
@@ -59,7 +40,6 @@ class OrbitalViewModel : ViewModel() {
         createInitialState()
     )
 
-    /** Observable state consumed by the Compose interface. */
     val uiState: StateFlow<OrbitalUiState> =
         _uiState.asStateFlow()
 
@@ -68,8 +48,8 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Builds the initial fleet, station, vehicle,
-     * and operational event history.
+     * Initializes satellite telemetry, mission events,
+     * and the docked servicing vehicle.
      */
     private fun createInitialState(): OrbitalUiState {
 
@@ -77,7 +57,9 @@ class OrbitalViewModel : ViewModel() {
                 definition ->
 
             val telemetry =
-                SatelliteSimulator.initialTelemetry(definition)
+                SatelliteSimulator.initialTelemetry(
+                    definition
+                )
 
             SatelliteState(
                 definition = definition,
@@ -87,14 +69,12 @@ class OrbitalViewModel : ViewModel() {
             )
         }
 
-        val station = OrbitalServicing.stationAt(0)
-
         return OrbitalUiState(
             elapsedSeconds = 0,
             satellites = satellites,
             selectedSatelliteId =
                 SatelliteCatalog.satellites.first().id,
-            servicingStation = station,
+            servicingStation = OrbitalServicing.stationAt(0),
             events = listOf(
                 MissionEvent(
                     id = 1L,
@@ -111,12 +91,11 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Advances spacecraft, station, and vehicle motion
+     * Advances satellites and vehicle movement
      * once per simulation second.
      *
-     * Received telemetry freezes during outages.
-     * An in-progress repair session retains its progress
-     * if formation guidance is temporarily interrupted.
+     * Repair progress persists during telemetry loss.
+     * Controls are locked while formation is unavailable.
      */
     private fun startSimulation() {
 
@@ -128,7 +107,9 @@ class OrbitalViewModel : ViewModel() {
 
                 _uiState.update { current ->
 
-                    val second = current.elapsedSeconds + 1
+                    val second =
+                        current.elapsedSeconds + 1
+
                     var events = current.events
 
                     val satellites = current.satellites.map {
@@ -137,18 +118,20 @@ class OrbitalViewModel : ViewModel() {
                         val previousMode =
                             satellite.onboardTelemetry.powerMode
 
-                        val onboard = SatelliteSimulator.advance(
-                            previous = satellite.onboardTelemetry,
-                            second = second,
-                            satellite = satellite.definition,
-                            fault = satellite.fault,
-                            faultStartedSecond =
-                                satellite.faultStartedSecond,
-                            equipmentDamage =
-                                satellite.equipmentDamage,
-                            equipmentDamageStartedSecond =
-                                satellite.equipmentDamageStartedSecond
-                        )
+                        val onboard =
+                            SatelliteSimulator.advance(
+                                previous =
+                                    satellite.onboardTelemetry,
+                                second = second,
+                                satellite = satellite.definition,
+                                fault = satellite.fault,
+                                faultStartedSecond =
+                                    satellite.faultStartedSecond,
+                                equipmentDamage =
+                                    satellite.equipmentDamage,
+                                equipmentDamageStartedSecond =
+                                    satellite.equipmentDamageStartedSecond
+                            )
 
                         events = updatePowerEvents(
                             history = events,
@@ -158,30 +141,35 @@ class OrbitalViewModel : ViewModel() {
                             atSecond = second
                         )
 
-                        val updated = satellite.copy(
-                            onboardTelemetry = onboard
+                        withReceivedTelemetry(
+                            satellite.copy(
+                                onboardTelemetry = onboard
+                            ),
+                            onboard
                         )
-
-                        withReceivedTelemetry(updated, onboard)
                     }
 
-                    val station = OrbitalServicing.stationAt(second)
-                    val previousVehicle = current.servicingVehicle
+                    val station =
+                        OrbitalServicing.stationAt(second)
+
+                    val previous =
+                        current.servicingVehicle
 
                     val target = satellites.firstOrNull {
                         it.definition.id ==
-                                previousVehicle.targetSatelliteId
+                                previous.targetSatelliteId
                     }
 
-                    val vehicle = ServicingVehicleNavigation.advance(
-                        vehicle = previousVehicle,
-                        station = station,
-                        target = target,
-                        atSecond = second
-                    )
+                    val vehicle =
+                        ServicingVehicleNavigation.advance(
+                            vehicle = previous,
+                            station = station,
+                            target = target,
+                            atSecond = second
+                        )
 
                     val established =
-                        previousVehicle.phase ==
+                        previous.phase ==
                                 ServicingVehiclePhase.APPROACHING &&
                                 vehicle.phase ==
                                 ServicingVehiclePhase.FORMATION_FOLLOWING
@@ -191,22 +179,25 @@ class OrbitalViewModel : ViewModel() {
                         events = appendEvent(
                             history = events,
                             satelliteId =
-                                vehicle.targetSatelliteId ?: "FLEET",
+                                vehicle.targetSatelliteId
+                                    ?: "FLEET",
                             atSecond = second,
-                            title = "Formation following established",
+                            title =
+                                "Formation following established",
                             description =
-                                "SERVICER-01 is following the target " +
-                                        "on its simulated orbital track.",
-                            severity = MissionEventSeverity.INFO,
+                                "SERVICER-01 matched the target's " +
+                                        "schematic orbital track.",
+                            severity =
+                                MissionEventSeverity.INFO,
                             kind = MissionEventKind.ACTIVITY
                         )
                     }
 
-                    val trackingLost =
+                    val lost =
                         (
-                                previousVehicle.phase ==
+                                previous.phase ==
                                         ServicingVehiclePhase.APPROACHING ||
-                                        previousVehicle.phase ==
+                                        previous.phase ==
                                         ServicingVehiclePhase.FORMATION_FOLLOWING
                                 ) &&
                                 vehicle.phase ==
@@ -214,25 +205,27 @@ class OrbitalViewModel : ViewModel() {
                                 vehicle.holdReason ==
                                 VehicleHoldReason.TELEMETRY_UNAVAILABLE
 
-                    if (trackingLost) {
+                    if (lost) {
 
                         events = appendEvent(
                             history = events,
                             satelliteId =
-                                vehicle.targetSatelliteId ?: "FLEET",
+                                vehicle.targetSatelliteId
+                                    ?: "FLEET",
                             atSecond = second,
                             title = "Vehicle tracking suspended",
                             description =
                                 "Target telemetry is unavailable. " +
-                                        "Guidance and robotic servicing " +
-                                        "commands are suspended.",
-                            severity = MissionEventSeverity.WARNING,
+                                        "Robotic servicing controls " +
+                                        "are locked.",
+                            severity =
+                                MissionEventSeverity.WARNING,
                             kind = MissionEventKind.ACTIVITY
                         )
                     }
 
                     val docked =
-                        previousVehicle.phase ==
+                        previous.phase ==
                                 ServicingVehiclePhase.RETURNING &&
                                 vehicle.phase ==
                                 ServicingVehiclePhase.DOCKED
@@ -242,14 +235,15 @@ class OrbitalViewModel : ViewModel() {
                         events = appendEvent(
                             history = events,
                             satelliteId =
-                                previousVehicle.targetSatelliteId
+                                previous.targetSatelliteId
                                     ?: "FLEET",
                             atSecond = second,
                             title = "Servicing vehicle docked",
                             description =
-                                "SERVICER-01 returned to OS-001. " +
-                                        "The deployment is closed.",
-                            severity = MissionEventSeverity.INFO,
+                                "SERVICER-01 returned to OS-001; " +
+                                        "deployment closed.",
+                            severity =
+                                MissionEventSeverity.INFO,
                             kind = MissionEventKind.ACTIVITY
                         )
                     }
@@ -275,17 +269,20 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Selects a monitored spacecraft.
+     * Selects a satellite for detailed monitoring.
      */
     fun selectSatellite(satelliteId: String) {
 
         _uiState.update { current ->
 
-            if (current.satellites.any {
+            if (
+                current.satellites.any {
                     it.definition.id == satelliteId
                 }
             ) {
-                current.copy(selectedSatelliteId = satelliteId)
+                current.copy(
+                    selectedSatelliteId = satelliteId
+                )
             } else {
                 current
             }
@@ -293,9 +290,9 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Applies or clears a temporary diagnostic fault.
+     * Applies or clears a temporary fault.
      *
-     * Persistent equipment damage is not affected.
+     * Persistent equipment damage is unaffected.
      */
     fun setFault(fault: SatelliteFault) {
 
@@ -308,34 +305,42 @@ class OrbitalViewModel : ViewModel() {
             }
 
             val now = current.elapsedSeconds
-            val faultStarted = if (
-                fault == SatelliteFault.NONE
-            ) null else now
+
+            val started =
+                if (fault == SatelliteFault.NONE)
+                    null
+                else
+                    now
 
             val satellites = current.satellites.map {
                     satellite ->
 
-                if (satellite.definition.id != selected.definition.id) {
+                if (
+                    satellite.definition.id !=
+                    selected.definition.id
+                ) {
 
                     satellite
 
                 } else {
 
-                    val onboard = SatelliteSimulator.refresh(
-                        previous = satellite.onboardTelemetry,
-                        satellite = satellite.definition,
-                        fault = fault,
-                        faultStartedSecond = faultStarted,
-                        equipmentDamage =
-                            satellite.equipmentDamage,
-                        equipmentDamageStartedSecond =
-                            satellite.equipmentDamageStartedSecond
-                    )
+                    val onboard =
+                        SatelliteSimulator.refresh(
+                            previous =
+                                satellite.onboardTelemetry,
+                            satellite = satellite.definition,
+                            fault = fault,
+                            faultStartedSecond = started,
+                            equipmentDamage =
+                                satellite.equipmentDamage,
+                            equipmentDamageStartedSecond =
+                                satellite.equipmentDamageStartedSecond
+                        )
 
                     withReceivedTelemetry(
                         satellite.copy(
                             fault = fault,
-                            faultStartedSecond = faultStarted,
+                            faultStartedSecond = started,
                             onboardTelemetry = onboard
                         ),
                         onboard
@@ -345,14 +350,18 @@ class OrbitalViewModel : ViewModel() {
 
             var events = current.events
 
-            if (selected.fault != SatelliteFault.NONE) {
+            if (
+                selected.fault != SatelliteFault.NONE
+            ) {
 
-                events = MissionEventLog.resolveActiveForSource(
-                    history = events,
-                    satelliteId = selected.definition.id,
-                    sourceKey = MANUAL_FAULT_SOURCE,
-                    atSecond = now
-                )
+                events =
+                    MissionEventLog.resolveActiveForSource(
+                        history = events,
+                        satelliteId =
+                            selected.definition.id,
+                        sourceKey = MANUAL_FAULT_SOURCE,
+                        atSecond = now
+                    )
 
                 events = appendEvent(
                     history = events,
@@ -360,7 +369,8 @@ class OrbitalViewModel : ViewModel() {
                     atSecond = now,
                     title = "Temporary fault cleared",
                     description =
-                        "${selected.fault.displayName} is no longer active.",
+                        "${selected.fault.displayName} " +
+                                "is no longer active.",
                     severity = MissionEventSeverity.INFO,
                     kind = MissionEventKind.ACTIVITY
                 )
@@ -388,19 +398,22 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Removes the selected spacecraft's temporary fault.
+     * Clears the selected satellite's temporary fault.
      */
-    fun clearFault() {
+    fun clearFault() =
         setFault(SatelliteFault.NONE)
-    }
 
     /**
-     * Injects persistent equipment damage and opens
-     * a corresponding repair work order.
+     * Injects persistent hardware damage and
+     * creates the corresponding repair work order.
      */
-    fun injectEquipmentDamage(damage: EquipmentDamage) {
+    fun injectEquipmentDamage(
+        damage: EquipmentDamage
+    ) {
 
-        if (damage == EquipmentDamage.NONE) return
+        if (damage == EquipmentDamage.NONE) {
+            return
+        }
 
         _uiState.update { current ->
 
@@ -415,21 +428,26 @@ class OrbitalViewModel : ViewModel() {
             val satellites = current.satellites.map {
                     satellite ->
 
-                if (satellite.definition.id != selected.definition.id) {
+                if (
+                    satellite.definition.id !=
+                    selected.definition.id
+                ) {
 
                     satellite
 
                 } else {
 
-                    val onboard = SatelliteSimulator.refresh(
-                        previous = satellite.onboardTelemetry,
-                        satellite = satellite.definition,
-                        fault = satellite.fault,
-                        faultStartedSecond =
-                            satellite.faultStartedSecond,
-                        equipmentDamage = damage,
-                        equipmentDamageStartedSecond = now
-                    )
+                    val onboard =
+                        SatelliteSimulator.refresh(
+                            previous =
+                                satellite.onboardTelemetry,
+                            satellite = satellite.definition,
+                            fault = satellite.fault,
+                            faultStartedSecond =
+                                satellite.faultStartedSecond,
+                            equipmentDamage = damage,
+                            equipmentDamageStartedSecond = now
+                        )
 
                     withReceivedTelemetry(
                         satellite.copy(
@@ -442,9 +460,11 @@ class OrbitalViewModel : ViewModel() {
                 }
             }
 
-            val nextId =
-                (current.repairOrders.maxOfOrNull { it.id }
-                    ?: 0L) + 1L
+            val nextId = (
+                    current.repairOrders.maxOfOrNull {
+                        it.id
+                    } ?: 0L
+                    ) + 1L
 
             val orders = RepairWorkOrders.open(
                 orders = current.repairOrders,
@@ -461,7 +481,8 @@ class OrbitalViewModel : ViewModel() {
                 title = damage.displayName,
                 description =
                     "${damage.description} " +
-                            "Required servicing: ${damage.repairAction}.",
+                            "Required servicing: " +
+                            "${damage.repairAction}.",
                 severity = severityForDamage(damage),
                 kind = MissionEventKind.ALERT,
                 sourceKey = EQUIPMENT_DAMAGE_SOURCE
@@ -476,7 +497,7 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Places an open maintenance request in the repair queue.
+     * Moves an open repair request into the servicing queue.
      */
     fun queueRepair(orderId: Long) {
 
@@ -487,21 +508,20 @@ class OrbitalViewModel : ViewModel() {
                         it.status == RepairStatus.OPEN
             } ?: return@update current
 
-            val now = current.elapsedSeconds
-
             val orders = RepairWorkOrders.queue(
                 orders = current.repairOrders,
                 orderId = orderId,
-                atSecond = now
+                atSecond = current.elapsedSeconds
             )
 
             val events = appendEvent(
                 history = current.events,
                 satelliteId = order.satelliteId,
-                atSecond = now,
+                atSecond = current.elapsedSeconds,
                 title = "Repair queued",
                 description =
-                    "Work order #$orderId: ${order.damage.repairAction}.",
+                    "Work order #${order.id}: " +
+                            "${order.damage.repairAction}.",
                 severity = MissionEventSeverity.INFO,
                 kind = MissionEventKind.ACTIVITY
             )
@@ -514,8 +534,7 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Prepares a queued repair mission while the
-     * servicing vehicle is docked at OS-001.
+     * Prepares a queued mission while the robot is docked.
      */
     fun prepareServicingMission(orderId: Long) {
 
@@ -537,27 +556,27 @@ class OrbitalViewModel : ViewModel() {
                 it.definition.id == order.satelliteId
             } ?: return@update current
 
-            if (target.equipmentDamage != order.damage) {
+            if (
+                target.equipmentDamage != order.damage
+            ) {
                 return@update current
             }
-
-            val now = current.elapsedSeconds
 
             val plan = OrbitalServicing.prepare(
                 orders = current.repairOrders,
                 satellites = current.satellites,
                 workOrderId = orderId,
-                atSecond = now
+                atSecond = current.elapsedSeconds
             )
 
             val events = appendEvent(
                 history = current.events,
                 satelliteId = order.satelliteId,
-                atSecond = now,
+                atSecond = current.elapsedSeconds,
                 title = "Servicing mission prepared",
                 description =
                     "OS-001 prepared work order #$orderId. " +
-                            "No vehicle has been dispatched.",
+                            "No repair performed.",
                 severity = MissionEventSeverity.INFO,
                 kind = MissionEventKind.ACTIVITY
             )
@@ -589,7 +608,8 @@ class OrbitalViewModel : ViewModel() {
                 atSecond = current.elapsedSeconds,
                 title = "Mission preparation cancelled",
                 description =
-                    "Work order #${plan.workOrderId} remains queued.",
+                    "Work order #${plan.workOrderId} " +
+                            "remains queued.",
                 severity = MissionEventSeverity.INFO,
                 kind = MissionEventKind.ACTIVITY
             )
@@ -603,8 +623,8 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Dispatches SERVICER-01 after validating
-     * target telemetry and mission eligibility.
+     * Dispatches the vehicle when the target
+     * has current received telemetry.
      */
     fun dispatchServicingVehicle() {
 
@@ -625,11 +645,12 @@ class OrbitalViewModel : ViewModel() {
                 return@update current
             }
 
-            val vehicle = ServicingVehicleNavigation.dispatch(
-                vehicle = current.servicingVehicle,
-                plan = plan,
-                station = current.servicingStation
-            )
+            val vehicle =
+                ServicingVehicleNavigation.dispatch(
+                    vehicle = current.servicingVehicle,
+                    plan = plan,
+                    station = current.servicingStation
+                )
 
             val events = appendEvent(
                 history = current.events,
@@ -637,8 +658,8 @@ class OrbitalViewModel : ViewModel() {
                 atSecond = current.elapsedSeconds,
                 title = "Servicing vehicle deployed",
                 description =
-                    "SERVICER-01 departed OS-001 for work " +
-                            "order #${plan.workOrderId}.",
+                    "SERVICER-01 departed OS-001 for " +
+                            "work order #${plan.workOrderId}.",
                 severity = MissionEventSeverity.INFO,
                 kind = MissionEventKind.ACTIVITY
             )
@@ -651,8 +672,7 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Starts scripted vehicle approach using
-     * the target's received telemetry.
+     * Begins the vehicle's approach to its assigned target.
      */
     fun beginVehicleApproach() {
 
@@ -661,25 +681,33 @@ class OrbitalViewModel : ViewModel() {
             val vehicle = current.servicingVehicle
 
             if (
-                vehicle.phase != ServicingVehiclePhase.DEPLOYED
-            ) return@update current
+                vehicle.phase !=
+                ServicingVehiclePhase.DEPLOYED
+            ) {
+                return@update current
+            }
 
             val target = current.satellites.firstOrNull {
-                it.definition.id == vehicle.targetSatelliteId
+                it.definition.id ==
+                        vehicle.targetSatelliteId
             } ?: return@update current
 
-            if (!ServicingVehicleNavigation
+            if (
+                !ServicingVehicleNavigation
                     .hasCurrentTargetTelemetry(
                         target,
                         current.elapsedSeconds
                     )
-            ) return@update current
+            ) {
+                return@update current
+            }
 
-            val updated = ServicingVehicleNavigation.beginApproach(
-                vehicle = vehicle,
-                target = target,
-                atSecond = current.elapsedSeconds
-            )
+            val next =
+                ServicingVehicleNavigation.beginApproach(
+                    vehicle = vehicle,
+                    target = target,
+                    atSecond = current.elapsedSeconds
+                )
 
             val events = appendEvent(
                 history = current.events,
@@ -694,14 +722,14 @@ class OrbitalViewModel : ViewModel() {
             )
 
             current.copy(
-                servicingVehicle = updated,
+                servicingVehicle = next,
                 events = events
             )
         }
     }
 
     /**
-     * Pauses an active guided approach.
+     * Pauses scripted approach without clearing repair progress.
      */
     fun holdServicingVehicle() {
 
@@ -710,10 +738,14 @@ class OrbitalViewModel : ViewModel() {
             val vehicle = current.servicingVehicle
 
             if (
-                vehicle.phase != ServicingVehiclePhase.APPROACHING
-            ) return@update current
+                vehicle.phase !=
+                ServicingVehiclePhase.APPROACHING
+            ) {
+                return@update current
+            }
 
-            val updated = ServicingVehicleNavigation.hold(vehicle)
+            val next =
+                ServicingVehicleNavigation.hold(vehicle)
 
             val events = appendEvent(
                 history = current.events,
@@ -721,21 +753,21 @@ class OrbitalViewModel : ViewModel() {
                     vehicle.targetSatelliteId ?: "FLEET",
                 atSecond = current.elapsedSeconds,
                 title = "Vehicle hold requested",
-                description = "Operator paused scripted guidance.",
+                description =
+                    "Operator paused scripted guidance.",
                 severity = MissionEventSeverity.INFO,
                 kind = MissionEventKind.ACTIVITY
             )
 
             current.copy(
-                servicingVehicle = updated,
+                servicingVehicle = next,
                 events = events
             )
         }
     }
 
     /**
-     * Resumes guided approach when target telemetry
-     * becomes available again.
+     * Resumes approach after fresh telemetry is available.
      */
     fun resumeVehicleApproach() {
 
@@ -745,20 +777,26 @@ class OrbitalViewModel : ViewModel() {
 
             if (
                 vehicle.phase != ServicingVehiclePhase.HOLDING
-            ) return@update current
+            ) {
+                return@update current
+            }
 
             val target = current.satellites.firstOrNull {
-                it.definition.id == vehicle.targetSatelliteId
+                it.definition.id ==
+                        vehicle.targetSatelliteId
             } ?: return@update current
 
-            if (!ServicingVehicleNavigation
+            if (
+                !ServicingVehicleNavigation
                     .hasCurrentTargetTelemetry(
                         target,
                         current.elapsedSeconds
                     )
-            ) return@update current
+            ) {
+                return@update current
+            }
 
-            val updated =
+            val next =
                 ServicingVehicleNavigation.resumeApproach(
                     vehicle = vehicle,
                     target = target,
@@ -777,14 +815,14 @@ class OrbitalViewModel : ViewModel() {
             )
 
             current.copy(
-                servicingVehicle = updated,
+                servicingVehicle = next,
                 events = events
             )
         }
     }
 
     /**
-     * Commands SERVICER-01 to return to OS-001.
+     * Returns the deployed vehicle to OS-001.
      */
     fun returnServicingVehicle() {
 
@@ -803,10 +841,14 @@ class OrbitalViewModel : ViewModel() {
                 ServicingVehiclePhase.RETURNING -> false
             }
 
-            if (!canReturn) return@update current
+            if (!canReturn) {
+                return@update current
+            }
 
-            val updated =
-                ServicingVehicleNavigation.beginReturn(vehicle)
+            val next =
+                ServicingVehicleNavigation.beginReturn(
+                    vehicle
+                )
 
             val events = appendEvent(
                 history = current.events,
@@ -821,15 +863,15 @@ class OrbitalViewModel : ViewModel() {
             )
 
             current.copy(
-                servicingVehicle = updated,
+                servicingVehicle = next,
                 events = events
             )
         }
     }
 
     /**
-     * Checks that the active interactive repair matches
-     * the current mission and has verified formation.
+     * Checks mission assignment, current telemetry,
+     * and verified formation before a servicing action.
      */
     private fun canOperateRepair(
         state: OrbitalUiState
@@ -838,22 +880,27 @@ class OrbitalViewModel : ViewModel() {
         val session = state.repairSession
             ?: return false
 
-        if (session.isComplete) return false
+        if (session.isComplete) {
+            return false
+        }
 
         val order = state.repairOrders.firstOrNull {
             it.id == session.workOrderId
         } ?: return false
 
-        return session.satelliteId == order.satelliteId &&
+        return session.satelliteId ==
+                order.satelliteId &&
                 session.damage == order.damage &&
                 state.preparedMission?.workOrderId == order.id &&
-                RepairCompletionPolicy.evaluate(state, order) ==
-                RepairCompletionStatus.READY_IN_FORMATION
+                RepairCompletionPolicy.evaluate(
+                    state,
+                    order
+                ) == RepairCompletionStatus.READY_IN_FORMATION
     }
 
     /**
-     * Starts a touchscreen repair procedure after the
-     * vehicle establishes formation with its target.
+     * Opens the interactive service model for
+     * the active repair work order.
      */
     fun startRoboticRepair() {
 
@@ -871,20 +918,27 @@ class OrbitalViewModel : ViewModel() {
             } ?: return@update current
 
             if (
-                RepairCompletionPolicy.evaluate(current, order) !=
+                RepairCompletionPolicy.evaluate(
+                    current,
+                    order
+                ) !=
                 RepairCompletionStatus.READY_IN_FORMATION
-            ) return@update current
+            ) {
+                return@update current
+            }
 
-            val session = RoboticRepairSimulator.start(order)
+            val session =
+                RoboticRepairSimulator.start(order)
 
             val events = appendEvent(
                 history = current.events,
                 satelliteId = order.satelliteId,
                 atSecond = current.elapsedSeconds,
-                title = "Robotic servicing started",
+                title = "Satellite access procedure started",
                 description =
-                    "SERVICER-01 started the interactive " +
-                            "procedure for work order #${order.id}.",
+                    "SERVICER-01 opened the interactive " +
+                            "service model for work order " +
+                            "#${order.id}.",
                 severity = MissionEventSeverity.INFO,
                 kind = MissionEventKind.ACTIVITY
             )
@@ -897,31 +951,8 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Moves the robotic arm within its local service area.
-     *
-     * Arm commands are rejected if formation or target
-     * telemetry is unavailable.
-     */
-    fun moveRepairArm(direction: RepairArmDirection) {
-
-        _uiState.update { current ->
-
-            if (!canOperateRepair(current)) {
-                return@update current
-            }
-
-            val session = current.repairSession
-                ?: return@update current
-
-            current.copy(
-                repairSession =
-                    RoboticRepairSimulator.move(session, direction)
-            )
-        }
-    }
-
-    /**
-     * Selects the tool used for the current repair task.
+     * Changes the selected tool without
+     * advancing the repair procedure.
      */
     fun selectRepairTool(tool: RepairTool) {
 
@@ -936,21 +967,20 @@ class OrbitalViewModel : ViewModel() {
 
             current.copy(
                 repairSession =
-                    RoboticRepairSimulator.selectTool(session, tool)
+                    RoboticRepairSimulator.selectTool(
+                        session,
+                        tool
+                    )
             )
         }
     }
 
     /**
-     * Attempts the current repair task.
-     *
-     * Wrong tools or incorrect arm placement do not
-     * advance the procedure or clear equipment damage.
-     *
-     * A successful final verification completes the
-     * work order atomically within the same state update.
+     * Chooses between component repair and replacement.
      */
-    fun executeRepairStep() {
+    fun chooseRepairMethod(
+        method: RepairServiceMethod
+    ) {
 
         _uiState.update { current ->
 
@@ -961,68 +991,122 @@ class OrbitalViewModel : ViewModel() {
             val session = current.repairSession
                 ?: return@update current
 
-            val result = RoboticRepairSimulator.execute(session)
-
-            if (!result.succeeded) {
-
-                return@update current.copy(
-                    repairSession = result.session
-                )
-            }
-
-            var updated = current.copy(
-                repairSession = result.session
-            )
-
-            val events = appendEvent(
-                history = updated.events,
-                satelliteId = session.satelliteId,
-                atSecond = current.elapsedSeconds,
-                title = "Robotic task completed",
-                description =
-                    "${session.step.displayName} completed " +
-                            "for work order #${session.workOrderId}.",
-                severity = MissionEventSeverity.INFO,
-                kind = MissionEventKind.ACTIVITY
-            )
-
-            updated = updated.copy(events = events)
-
-            if (result.finished) {
-
-                val order = updated.repairOrders.firstOrNull {
-                    it.id == session.workOrderId &&
-                            it.status == RepairStatus.QUEUED
-                } ?: return@update updated
-
-                finishRepair(
-                    current = updated,
-                    order = order,
-                    completedInFormation = true
+            val result =
+                RoboticRepairSimulator.chooseMethod(
+                    session,
+                    method
                 )
 
-            } else {
-                updated
-            }
+            recordInteraction(
+                state = current,
+                result = result,
+                activityTitle = "Service method selected"
+            )
         }
     }
 
     /**
-     * Restarts an incomplete robotic procedure without
-     * clearing equipment damage or closing the mission.
+     * Processes a tap on a screw, cover, exposed component,
+     * mounting socket, or diagnostics connector.
      *
-     * The work order remains queued.
+     * Final verification completes the work order
+     * atomically with the repair session state.
+     */
+    fun interactWithRepairModel(
+        hotspot: RepairHotspot
+    ) {
+
+        _uiState.update { current ->
+
+            if (!canOperateRepair(current)) {
+                return@update current
+            }
+
+            val session = current.repairSession
+                ?: return@update current
+
+            val result =
+                RoboticRepairSimulator.interact(
+                    session,
+                    hotspot
+                )
+
+            val updated = recordInteraction(
+                state = current,
+                result = result,
+                activityTitle = "Satellite servicing action"
+            )
+
+            if (!result.completed) {
+                return@update updated
+            }
+
+            val order = updated.repairOrders.firstOrNull {
+                it.id == session.workOrderId &&
+                        it.status == RepairStatus.QUEUED
+            } ?: return@update updated
+
+            finishRepair(
+                current = updated,
+                order = order,
+                completedInFormation = true
+            )
+        }
+    }
+
+    /**
+     * Records successful servicing state changes
+     * in the mission event history.
+     */
+    private fun recordInteraction(
+        state: OrbitalUiState,
+        result: RepairInteractionResult,
+        activityTitle: String
+    ): OrbitalUiState {
+
+        var updated = state.copy(
+            repairSession = result.session
+        )
+
+        if (
+            result.succeeded &&
+            result.stepChanged
+        ) {
+
+            updated = updated.copy(
+                events = appendEvent(
+                    history = state.events,
+                    satelliteId =
+                        result.session.satelliteId,
+                    atSecond = state.elapsedSeconds,
+                    title = activityTitle,
+                    description =
+                        "Work order " +
+                                "#${result.session.workOrderId}: " +
+                                result.session.feedback,
+                    severity = MissionEventSeverity.INFO,
+                    kind = MissionEventKind.ACTIVITY
+                )
+            )
+        }
+
+        return updated
+    }
+
+    /**
+     * Restarts an incomplete service procedure
+     * while formation and telemetry are verified.
      */
     fun restartRoboticRepair() {
 
         _uiState.update { current ->
 
-            val session = current.repairSession
-                ?: return@update current
-
-            if (session.isComplete) {
+            if (!canOperateRepair(current)) {
                 return@update current
             }
+
+            val session = current.repairSession
+                ?: return@update current
 
             val order = current.repairOrders.firstOrNull {
                 it.id == session.workOrderId &&
@@ -1033,25 +1117,27 @@ class OrbitalViewModel : ViewModel() {
                 history = current.events,
                 satelliteId = session.satelliteId,
                 atSecond = current.elapsedSeconds,
-                title = "Robotic procedure restarted",
+                title = "Satellite servicing restarted",
                 description =
-                    "Operator restarted work order #${order.id}.",
+                    "Operator reset the local service model " +
+                            "for work order #${order.id}.",
                 severity = MissionEventSeverity.INFO,
                 kind = MissionEventKind.ACTIVITY
             )
 
             current.copy(
-                repairSession = RoboticRepairSimulator.start(order),
+                repairSession =
+                    RoboticRepairSimulator.start(order),
                 events = events
             )
         }
     }
 
     /**
-     * Retains the original docked, debug-only repair
-     * completion shortcut for simulator testing.
+     * Preserves the docked-only debug completion shortcut.
      *
-     * In-orbit repair must use the interactive console.
+     * Normal in-orbit repair completion must be performed
+     * through the interactive satellite service model.
      */
     fun completeRepair(orderId: Long) {
 
@@ -1061,11 +1147,12 @@ class OrbitalViewModel : ViewModel() {
                 it.id == orderId
             } ?: return@update current
 
-            val readiness =
-                RepairCompletionPolicy.evaluate(current, order)
-
             if (
-                readiness != RepairCompletionStatus.READY_AT_STATION
+                RepairCompletionPolicy.evaluate(
+                    current,
+                    order
+                ) !=
+                RepairCompletionStatus.READY_AT_STATION
             ) {
                 return@update current
             }
@@ -1079,11 +1166,11 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Restores damaged equipment, completes its work order,
-     * and resolves only the associated hardware alert.
+     * Completes the work order, restores damaged equipment,
+     * and resolves only its corresponding damage alert.
      *
-     * An interactive in-orbit repair preserves both the
-     * robotic vehicle and its prepared mission until docking.
+     * Successful orbital servicing keeps SERVICER-01
+     * following its target until the operator returns home.
      */
     private fun finishRepair(
         current: OrbitalUiState,
@@ -1096,7 +1183,10 @@ class OrbitalViewModel : ViewModel() {
         val satellites = current.satellites.map {
                 spacecraft ->
 
-            if (spacecraft.definition.id != order.satelliteId) {
+            if (
+                spacecraft.definition.id !=
+                order.satelliteId
+            ) {
 
                 spacecraft
 
@@ -1129,12 +1219,13 @@ class OrbitalViewModel : ViewModel() {
             atSecond = now
         )
 
-        var events = MissionEventLog.resolveActiveForSource(
-            history = current.events,
-            satelliteId = order.satelliteId,
-            sourceKey = EQUIPMENT_DAMAGE_SOURCE,
-            atSecond = now
-        )
+        var events =
+            MissionEventLog.resolveActiveForSource(
+                history = current.events,
+                satelliteId = order.satelliteId,
+                sourceKey = EQUIPMENT_DAMAGE_SOURCE,
+                atSecond = now
+            )
 
         events = appendEvent(
             history = events,
@@ -1142,12 +1233,15 @@ class OrbitalViewModel : ViewModel() {
             atSecond = now,
             title = "Simulated repair completed",
             description = if (completedInFormation) {
-                "SERVICER-01 completed the interactive " +
-                        "maintenance procedure for work order " +
-                        "#${order.id}. Return to OS-001 when ready."
+
+                "SERVICER-01 completed panel servicing " +
+                        "for work order #${order.id}. " +
+                        "Return to OS-001 when ready."
+
             } else {
-                "Work order #${order.id} completed using " +
-                        "the docked simulator debug action."
+
+                "Work order #${order.id} was completed " +
+                        "using the docked debug shortcut."
             },
             severity = MissionEventSeverity.INFO,
             kind = MissionEventKind.ACTIVITY
@@ -1155,7 +1249,8 @@ class OrbitalViewModel : ViewModel() {
 
         val closePlan =
             !completedInFormation &&
-                    current.preparedMission?.workOrderId == order.id
+                    current.preparedMission?.workOrderId ==
+                    order.id
 
         return current.copy(
             satellites = satellites,
@@ -1164,13 +1259,17 @@ class OrbitalViewModel : ViewModel() {
             preparedMission = if (closePlan)
                 null
             else
-                current.preparedMission
+                current.preparedMission,
+            repairSession = if (closePlan)
+                null
+            else
+                current.repairSession
         )
     }
 
     /**
-     * Stores newly received telemetry when communication
-     * is available and preserves stale measurements otherwise.
+     * Records received telemetry only while
+     * the spacecraft has an operational downlink.
      */
     private fun withReceivedTelemetry(
         satellite: SatelliteState,
@@ -1191,8 +1290,8 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Acknowledges an active mission alert without
-     * resolving the underlying fault or damage.
+     * Acknowledges an operational alert without
+     * clearing its underlying fault or damage.
      */
     fun acknowledgeAlert(eventId: Long) {
 
@@ -1218,8 +1317,8 @@ class OrbitalViewModel : ViewModel() {
                 atSecond = now,
                 title = "Alert acknowledged",
                 description =
-                    "Operator acknowledged ${alert.title}. " +
-                            "The underlying condition remains active.",
+                    "Operator acknowledged " +
+                            "${alert.title}; condition remains active.",
                 severity = MissionEventSeverity.INFO,
                 kind = MissionEventKind.ACTIVITY
             )
@@ -1229,8 +1328,8 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Creates automatic power alerts when the simulated
-     * spacecraft changes power operating modes.
+     * Maintains independent automatic power alerts
+     * when spacecraft power operating modes change.
      */
     private fun updatePowerEvents(
         history: List<MissionEvent>,
@@ -1240,14 +1339,17 @@ class OrbitalViewModel : ViewModel() {
         atSecond: Int
     ): List<MissionEvent> {
 
-        if (previousMode == currentMode) return history
+        if (previousMode == currentMode) {
+            return history
+        }
 
-        val resolved = MissionEventLog.resolveActiveForSource(
-            history = history,
-            satelliteId = satelliteId,
-            sourceKey = POWER_STATUS_SOURCE,
-            atSecond = atSecond
-        )
+        val resolved =
+            MissionEventLog.resolveActiveForSource(
+                history = history,
+                satelliteId = satelliteId,
+                sourceKey = POWER_STATUS_SOURCE,
+                atSecond = atSecond
+            )
 
         if (currentMode == PowerMode.NORMAL) {
 
@@ -1257,43 +1359,36 @@ class OrbitalViewModel : ViewModel() {
                 atSecond = atSecond,
                 title = "Normal power restored",
                 description =
-                    "The simulated power system returned " +
-                            "to normal operation.",
+                    "Simulated electrical power " +
+                            "returned to normal.",
                 severity = MissionEventSeverity.INFO,
                 kind = MissionEventKind.ACTIVITY
             )
         }
 
-        val title: String
-        val description: String
-        val severity: MissionEventSeverity
+        val (title, description, severity) =
+            when (currentMode) {
 
-        when (currentMode) {
+                PowerMode.LOW_POWER -> Triple(
+                    "Low battery",
+                    "The spacecraft reduced electrical consumption.",
+                    MissionEventSeverity.WARNING
+                )
 
-            PowerMode.LOW_POWER -> {
-                title = "Low battery"
-                description =
-                    "The spacecraft is reducing electrical consumption."
-                severity = MissionEventSeverity.WARNING
+                PowerMode.SAFE_MODE -> Triple(
+                    "Power safe mode",
+                    "Nonessential systems are disabled in the simulator.",
+                    MissionEventSeverity.CRITICAL
+                )
+
+                PowerMode.OFFLINE -> Triple(
+                    "Simulated power depletion",
+                    "Ground telemetry is unavailable due to depleted power.",
+                    MissionEventSeverity.CRITICAL
+                )
+
+                PowerMode.NORMAL -> return resolved
             }
-
-            PowerMode.SAFE_MODE -> {
-                title = "Power safe mode"
-                description =
-                    "Nonessential systems are disabled in the simulator."
-                severity = MissionEventSeverity.CRITICAL
-            }
-
-            PowerMode.OFFLINE -> {
-                title = "Simulated power depletion"
-                description =
-                    "Ground telemetry is unavailable due to " +
-                            "simulated power depletion."
-                severity = MissionEventSeverity.CRITICAL
-            }
-
-            PowerMode.NORMAL -> return resolved
-        }
 
         return appendEvent(
             history = resolved,
@@ -1308,50 +1403,44 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Returns the operational severity of a temporary fault.
+     * Maps temporary faults to mission alert severity.
      */
     private fun severityForFault(
         fault: SatelliteFault
-    ): MissionEventSeverity {
+    ): MissionEventSeverity = when (fault) {
 
-        return when (fault) {
+        SatelliteFault.COMMUNICATION_LOSS,
+        SatelliteFault.PAYLOAD_FAILURE ->
+            MissionEventSeverity.CRITICAL
 
-            SatelliteFault.COMMUNICATION_LOSS,
-            SatelliteFault.PAYLOAD_FAILURE ->
-                MissionEventSeverity.CRITICAL
+        SatelliteFault.POWER_DRAIN,
+        SatelliteFault.THERMAL_OVERLOAD ->
+            MissionEventSeverity.WARNING
 
-            SatelliteFault.POWER_DRAIN,
-            SatelliteFault.THERMAL_OVERLOAD ->
-                MissionEventSeverity.WARNING
-
-            SatelliteFault.NONE ->
-                MissionEventSeverity.INFO
-        }
+        SatelliteFault.NONE ->
+            MissionEventSeverity.INFO
     }
 
     /**
-     * Returns the operational severity of hardware damage.
+     * Maps equipment damage to mission alert severity.
      */
     private fun severityForDamage(
         damage: EquipmentDamage
-    ): MissionEventSeverity {
+    ): MissionEventSeverity = when (damage) {
 
-        return when (damage) {
+        EquipmentDamage.PAYLOAD_SENSOR_DAMAGE ->
+            MissionEventSeverity.CRITICAL
 
-            EquipmentDamage.PAYLOAD_SENSOR_DAMAGE ->
-                MissionEventSeverity.CRITICAL
+        EquipmentDamage.SOLAR_ARRAY_DAMAGE,
+        EquipmentDamage.THERMAL_RADIATOR_DAMAGE ->
+            MissionEventSeverity.WARNING
 
-            EquipmentDamage.SOLAR_ARRAY_DAMAGE,
-            EquipmentDamage.THERMAL_RADIATOR_DAMAGE ->
-                MissionEventSeverity.WARNING
-
-            EquipmentDamage.NONE ->
-                MissionEventSeverity.INFO
-        }
+        EquipmentDamage.NONE ->
+            MissionEventSeverity.INFO
     }
 
     /**
-     * Adds an event to the bounded mission event history.
+     * Adds a source-scoped event to the mission history.
      */
     private fun appendEvent(
         history: List<MissionEvent>,
@@ -1364,8 +1453,11 @@ class OrbitalViewModel : ViewModel() {
         sourceKey: String? = null
     ): List<MissionEvent> {
 
-        val nextId =
-            (history.maxOfOrNull { it.id } ?: 0L) + 1L
+        val nextId = (
+                history.maxOfOrNull {
+                    it.id
+                } ?: 0L
+                ) + 1L
 
         return MissionEventLog.record(
             history = history,
@@ -1383,10 +1475,11 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
-     * Resets fleet telemetry, faults, maintenance history,
-     * servicing station, vehicle, and robotic procedure.
+     * Resets satellites, maintenance records,
+     * servicing station, vehicle, and repair model.
      */
     fun resetSimulation() {
+
         _uiState.value = createInitialState()
     }
 }

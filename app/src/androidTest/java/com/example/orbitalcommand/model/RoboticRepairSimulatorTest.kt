@@ -7,14 +7,13 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Verifies interactive robotic arm controls,
- * tool requirements, task progression, and
- * simulated maintenance completion.
+ * Verifies satellite panel, fastener, component,
+ * replacement, and final verification interactions.
  */
 class RoboticRepairSimulatorTest {
 
     /**
-     * Creates a queued maintenance request.
+     * Creates a queued maintenance work order.
      */
     private fun order(
         damage: EquipmentDamage =
@@ -32,342 +31,579 @@ class RoboticRepairSimulatorTest {
     }
 
     /**
-     * Starts an interactive repair procedure.
+     * Selects the appropriate tool and executes
+     * one valid satellite-component interaction.
      */
-    private fun session(
-        damage: EquipmentDamage =
-            EquipmentDamage.SOLAR_ARRAY_DAMAGE
+    private fun interact(
+        session: RoboticRepairSession,
+        spot: RepairHotspot
     ): RoboticRepairSession {
 
-        return RoboticRepairSimulator.start(
-            order(damage)
-        )
-    }
-
-    /**
-     * Positions the arm and selects the appropriate
-     * tool to complete one test task.
-     */
-    private fun completeStep(
-        session: RoboticRepairSession
-    ): RepairProcedureResult {
-
-        val aligned = session.copy(
-            armPosition = RoboticRepairSimulator.workZone(
-                session.step
-            )
-        )
-
         val tool = RoboticRepairSimulator.requiredTool(
-            step = aligned.step,
-            damage = aligned.damage
+            session.step
         )
 
-        return RoboticRepairSimulator.execute(
-            RoboticRepairSimulator.selectTool(
-                session = aligned,
-                tool = tool
-            )
+        val selected = RoboticRepairSimulator.selectTool(
+            session,
+            tool
+        )
+
+        val result = RoboticRepairSimulator.interact(
+            selected,
+            spot
+        )
+
+        assertTrue(
+            result.session.feedback,
+            result.succeeded
+        )
+
+        return result.session
+    }
+
+    /**
+     * Returns all four distinct fastener positions.
+     */
+    private fun screws() = listOf(
+        RepairHotspot.SCREW_1,
+        RepairHotspot.SCREW_2,
+        RepairHotspot.SCREW_3,
+        RepairHotspot.SCREW_4
+    )
+
+    /**
+     * Removes all screws and opens the panel
+     * to expose internal equipment.
+     */
+    private fun exposeComponent(
+        session: RoboticRepairSession
+    ): RoboticRepairSession {
+
+        var current = session
+
+        for (screw in screws()) {
+            current = interact(current, screw)
+        }
+
+        assertEquals(
+            RepairProcedureStep.LIFT_PANEL,
+            current.step
+        )
+
+        return interact(
+            current,
+            RepairHotspot.ACCESS_PANEL
         )
     }
 
     /**
-     * Confirms that a new repair starts with
-     * inspection and an unselected tool.
+     * Completes a repair or replacement procedure,
+     * including reassembly and final diagnostics.
+     */
+    private fun finishSession(
+        damage: EquipmentDamage,
+        method: RepairServiceMethod
+    ): RoboticRepairSession {
+
+        var current = exposeComponent(
+            RoboticRepairSimulator.start(order(damage))
+        )
+
+        current = interact(
+            current,
+            RepairHotspot.COMPONENT
+        )
+
+        val choice = RoboticRepairSimulator.chooseMethod(
+            current,
+            method
+        )
+
+        assertTrue(choice.succeeded)
+
+        current = choice.session
+
+        if (
+            method == RepairServiceMethod.REPLACE_COMPONENT
+        ) {
+
+            current = interact(
+                current,
+                RepairHotspot.COMPONENT
+            )
+
+            assertEquals(
+                RepairPartCondition.REMOVED,
+                current.partCondition
+            )
+
+            current = interact(
+                current,
+                RepairHotspot.COMPONENT_SOCKET
+            )
+
+        } else {
+
+            current = interact(
+                current,
+                RepairHotspot.COMPONENT
+            )
+        }
+
+        current = interact(
+            current,
+            RepairHotspot.ACCESS_PANEL
+        )
+
+        for (screw in screws()) {
+            current = interact(current, screw)
+        }
+
+        assertEquals(
+            RepairProcedureStep.VERIFY,
+            current.step
+        )
+
+        return interact(
+            current,
+            RepairHotspot.DIAGNOSTIC_PORT
+        )
+    }
+
+    /**
+     * Verifies that servicing starts with
+     * damaged equipment and installed screws.
      */
     @Test
-    fun repairStartsAtInspection() {
+    fun repairStartsWithInstalledFasteners() {
 
-        val procedure = session()
-
-        assertEquals(
-            RepairProcedureStep.INSPECT,
-            procedure.step
+        val session = RoboticRepairSimulator.start(
+            order()
         )
 
         assertEquals(
-            RepairTool.NONE,
-            procedure.tool
+            RepairProcedureStep.UNSCREW,
+            session.step
         )
 
-        assertFalse(procedure.isComplete)
+        assertEquals(
+            RepairPartCondition.DAMAGED,
+            session.partCondition
+        )
+
+        assertFalse(session.panelOpen)
+
+        assertEquals(
+            4,
+            session.fastenersRemaining
+        )
     }
 
     /**
-     * Prevents starting maintenance for an
-     * unqueued repair request.
+     * Prevents servicing an unqueued repair.
      */
-    @Test(expected = IllegalArgumentException::class)
-    fun openRepairCannotStart() {
+    @Test(
+        expected = IllegalArgumentException::class
+    )
+    fun openOrderCannotStart() {
 
         RoboticRepairSimulator.start(
             order().copy(
-                status = RepairStatus.OPEN,
-                queuedAtSecond = null
+                status = RepairStatus.OPEN
             )
         )
     }
 
     /**
-     * Verifies one-step movement in each direction.
+     * Prevents removing screws without
+     * the correct tool.
      */
     @Test
-    fun armMovesWithDirectionalCommands() {
+    fun wrongToolDoesNotRemoveScrews() {
 
-        val initial = session()
-
-        val left = RoboticRepairSimulator.move(
-            initial,
-            RepairArmDirection.LEFT
+        val session = RoboticRepairSimulator.start(
+            order()
         )
 
-        val up = RoboticRepairSimulator.move(
-            initial,
-            RepairArmDirection.UP
+        val failed = RoboticRepairSimulator.interact(
+            session,
+            RepairHotspot.SCREW_1
         )
 
-        val right = RoboticRepairSimulator.move(
-            initial,
-            RepairArmDirection.RIGHT
-        )
-
-        val down = RoboticRepairSimulator.move(
-            initial,
-            RepairArmDirection.DOWN
-        )
-
-        assertTrue(
-            left.armPosition.x < initial.armPosition.x
-        )
-
-        assertTrue(
-            up.armPosition.y < initial.armPosition.y
-        )
-
-        assertTrue(
-            right.armPosition.x > initial.armPosition.x
-        )
-
-        assertTrue(
-            down.armPosition.y > initial.armPosition.y
-        )
-    }
-
-    /**
-     * Ensures repeated movement cannot move the arm
-     * outside its normalized work area.
-     */
-    @Test
-    fun armPositionIsBounded() {
-
-        var procedure = session()
-
-        repeat(30) {
-            procedure = RoboticRepairSimulator.move(
-                procedure,
-                RepairArmDirection.LEFT
-            )
-        }
-
-        repeat(30) {
-            procedure = RoboticRepairSimulator.move(
-                procedure,
-                RepairArmDirection.UP
-            )
-        }
+        assertFalse(failed.succeeded)
 
         assertEquals(
-            0.05f,
-            procedure.armPosition.x,
-            0.001f
-        )
-
-        assertEquals(
-            0.05f,
-            procedure.armPosition.y,
-            0.001f
+            0,
+            failed.session.loosenedScrews.size
         )
     }
 
     /**
-     * Prevents completing inspection with
-     * the wrong tool selected.
+     * Prevents the same screw from being
+     * counted as removed twice.
      */
     @Test
-    fun wrongToolCannotCompleteTask() {
+    fun fastenerMustBeUnique() {
 
-        val initial = session().copy(
-            armPosition =
-                RoboticRepairSimulator.workZone(
-                    RepairProcedureStep.INSPECT
+        val session = interact(
+            RoboticRepairSimulator.start(order()),
+            RepairHotspot.SCREW_1
+        )
+
+        val duplicate = RoboticRepairSimulator.interact(
+            session,
+            RepairHotspot.SCREW_1
+        )
+
+        assertFalse(duplicate.succeeded)
+
+        assertEquals(
+            1,
+            duplicate.session.loosenedScrews.size
+        )
+    }
+
+    /**
+     * Prevents lifting the cover before
+     * all fasteners have been removed.
+     */
+    @Test
+    fun panelRequiresFourRemovedFasteners() {
+
+        val session = RoboticRepairSimulator.selectTool(
+            RoboticRepairSimulator.start(order()),
+            RepairTool.GRIPPER
+        )
+
+        val failed = RoboticRepairSimulator.interact(
+            session,
+            RepairHotspot.ACCESS_PANEL
+        )
+
+        assertFalse(failed.succeeded)
+        assertFalse(failed.session.panelOpen)
+    }
+
+    /**
+     * Confirms that lifting the panel exposes
+     * the component for inspection.
+     */
+    @Test
+    fun panelOpensToExamination() {
+
+        val session = exposeComponent(
+            RoboticRepairSimulator.start(order())
+        )
+
+        assertTrue(session.panelOpen)
+
+        assertEquals(
+            RepairProcedureStep.EXAMINE,
+            session.step
+        )
+    }
+
+    /**
+     * Requires component examination before
+     * selecting a servicing method.
+     */
+    @Test
+    fun cannotSelectMethodBeforeInspection() {
+
+        val session = exposeComponent(
+            RoboticRepairSimulator.start(order())
+        )
+
+        val result = RoboticRepairSimulator.chooseMethod(
+            session,
+            RepairServiceMethod.REPLACE_COMPONENT
+        )
+
+        assertFalse(result.succeeded)
+
+        assertEquals(
+            RepairProcedureStep.EXAMINE,
+            result.session.step
+        )
+    }
+
+    /**
+     * Requires component removal before
+     * replacement installation.
+     */
+    @Test
+    fun replacementRequiresRemovalAndInstallation() {
+
+        var session = exposeComponent(
+            RoboticRepairSimulator.start(order())
+        )
+
+        session = interact(
+            session,
+            RepairHotspot.COMPONENT
+        )
+
+        session = RoboticRepairSimulator.chooseMethod(
+            session,
+            RepairServiceMethod.REPLACE_COMPONENT
+        ).session
+
+        val before = RoboticRepairSimulator.selectTool(
+            session,
+            RepairTool.INSTALLER
+        )
+
+        val invalid = RoboticRepairSimulator.interact(
+            before,
+            RepairHotspot.COMPONENT_SOCKET
+        )
+
+        assertFalse(invalid.succeeded)
+
+        assertEquals(
+            RepairPartCondition.DAMAGED,
+            invalid.session.partCondition
+        )
+
+        session = interact(
+            session,
+            RepairHotspot.COMPONENT
+        )
+
+        assertEquals(
+            RepairPartCondition.REMOVED,
+            session.partCondition
+        )
+
+        session = interact(
+            session,
+            RepairHotspot.COMPONENT_SOCKET
+        )
+
+        assertEquals(
+            RepairPartCondition.REPLACED,
+            session.partCondition
+        )
+    }
+
+    /**
+     * Verifies that an in-place repair
+     * preserves the existing component.
+     */
+    @Test
+    fun inPlaceRepairKeepsPartInstalled() {
+
+        var session = exposeComponent(
+            RoboticRepairSimulator.start(order())
+        )
+
+        session = interact(
+            session,
+            RepairHotspot.COMPONENT
+        )
+
+        session = RoboticRepairSimulator.chooseMethod(
+            session,
+            RepairServiceMethod.REPAIR_IN_PLACE
+        ).session
+
+        session = interact(
+            session,
+            RepairHotspot.COMPONENT
+        )
+
+        assertEquals(
+            RepairPartCondition.REPAIRED,
+            session.partCondition
+        )
+
+        assertEquals(
+            RepairProcedureStep.CLOSE_PANEL,
+            session.step
+        )
+    }
+
+    /**
+     * Blocks final verification before the
+     * access panel has been reassembled.
+     */
+    @Test
+    fun cannotVerifyBeforeClosingPanel() {
+
+        var session = exposeComponent(
+            RoboticRepairSimulator.start(order())
+        )
+
+        session = interact(
+            session,
+            RepairHotspot.COMPONENT
+        )
+
+        session = RoboticRepairSimulator.chooseMethod(
+            session,
+            RepairServiceMethod.REPAIR_IN_PLACE
+        ).session
+
+        session = interact(
+            session,
+            RepairHotspot.COMPONENT
+        )
+
+        val skipped = RoboticRepairSimulator.interact(
+            RoboticRepairSimulator.selectTool(
+                session,
+                RepairTool.SCANNER
+            ),
+            RepairHotspot.DIAGNOSTIC_PORT
+        )
+
+        assertFalse(skipped.succeeded)
+
+        assertEquals(
+            RepairProcedureStep.CLOSE_PANEL,
+            skipped.session.step
+        )
+    }
+
+    /**
+     * Verifies both service methods across
+     * every supported equipment failure.
+     */
+    @Test
+    fun allDamageTypesSupportBothServiceMethods() {
+
+        for (
+        damage in EquipmentDamage.entries.filter {
+            it != EquipmentDamage.NONE
+        }
+        ) {
+
+            for (method in RepairServiceMethod.entries) {
+
+                val result = finishSession(
+                    damage,
+                    method
                 )
-        )
 
-        val selected = RoboticRepairSimulator.selectTool(
-            initial,
-            RepairTool.SOLAR_DRIVER
-        )
+                assertTrue(result.isComplete)
+                assertFalse(result.panelOpen)
 
-        val result = RoboticRepairSimulator.execute(selected)
+                assertTrue(
+                    result.loosenedScrews.isEmpty()
+                )
 
-        assertFalse(result.succeeded)
-
-        assertEquals(
-            RepairProcedureStep.INSPECT,
-            result.session.step
-        )
-    }
-
-    /**
-     * Prevents completing inspection when the
-     * arm is outside the required service zone.
-     */
-    @Test
-    fun incorrectArmPositionBlocksTask() {
-
-        val initial = session().copy(
-            armPosition = RepairArmPosition(0.90f, 0.90f)
-        )
-
-        val selected = RoboticRepairSimulator.selectTool(
-            initial,
-            RepairTool.INSPECTION_SCANNER
-        )
-
-        val result = RoboticRepairSimulator.execute(selected)
-
-        assertFalse(result.succeeded)
-
-        assertEquals(
-            RepairProcedureStep.INSPECT,
-            result.session.step
-        )
-    }
-
-    /**
-     * Verifies successful inspection advances
-     * the procedure to subsystem isolation.
-     */
-    @Test
-    fun inspectionAdvancesToIsolation() {
-
-        val result = completeStep(session())
-
-        assertTrue(result.succeeded)
-
-        assertEquals(
-            RepairProcedureStep.ISOLATE,
-            result.session.step
-        )
-
-        assertFalse(result.finished)
-    }
-
-    /**
-     * Confirms replacement tools differ
-     * according to the failed equipment.
-     */
-    @Test
-    fun replacementToolMatchesEquipmentDamage() {
-
-        assertEquals(
-            RepairTool.SOLAR_DRIVER,
-            RoboticRepairSimulator.requiredTool(
-                RepairProcedureStep.REPLACE,
-                EquipmentDamage.SOLAR_ARRAY_DAMAGE
-            )
-        )
-
-        assertEquals(
-            RepairTool.THERMAL_WRENCH,
-            RoboticRepairSimulator.requiredTool(
-                RepairProcedureStep.REPLACE,
-                EquipmentDamage.THERMAL_RADIATOR_DAMAGE
-            )
-        )
-
-        assertEquals(
-            RepairTool.SENSOR_DRIVER,
-            RoboticRepairSimulator.requiredTool(
-                RepairProcedureStep.REPLACE,
-                EquipmentDamage.PAYLOAD_SENSOR_DAMAGE
-            )
-        )
-    }
-
-    /**
-     * Verifies the complete four-task sequence
-     * for each supported equipment failure.
-     */
-    @Test
-    fun allEquipmentTypesCanCompleteRepairProcedure() {
-
-        val damageTypes = listOf(
-            EquipmentDamage.SOLAR_ARRAY_DAMAGE,
-            EquipmentDamage.THERMAL_RADIATOR_DAMAGE,
-            EquipmentDamage.PAYLOAD_SENSOR_DAMAGE
-        )
-
-        damageTypes.forEach { damage ->
-
-            var procedure = session(damage)
-
-            repeat(4) {
-
-                val result = completeStep(procedure)
-
-                assertTrue(result.succeeded)
-
-                procedure = result.session
+                assertEquals(
+                    if (
+                        method ==
+                        RepairServiceMethod.REPLACE_COMPONENT
+                    ) {
+                        RepairPartCondition.REPLACED
+                    } else {
+                        RepairPartCondition.REPAIRED
+                    },
+                    result.partCondition
+                )
             }
-
-            assertEquals(
-                RepairProcedureStep.COMPLETE,
-                procedure.step
-            )
-
-            assertTrue(procedure.isComplete)
         }
     }
 
     /**
-     * Prevents an already completed procedure
-     * from executing additional repair tasks.
+     * Prevents a completed procedure
+     * from executing again.
      */
     @Test
-    fun completedProcedureCannotAdvanceAgain() {
+    fun completedProcedureCannotRunTwice() {
 
-        var procedure = session()
+        val session = finishSession(
+            EquipmentDamage.SOLAR_ARRAY_DAMAGE,
+            RepairServiceMethod.REPAIR_IN_PLACE
+        )
 
-        repeat(4) {
-            procedure = completeStep(procedure).session
-        }
-
-        val result = RoboticRepairSimulator.execute(procedure)
+        val result = RoboticRepairSimulator.interact(
+            session,
+            RepairHotspot.DIAGNOSTIC_PORT
+        )
 
         assertFalse(result.succeeded)
-        assertTrue(result.finished)
         assertTrue(result.session.isComplete)
     }
 
     /**
-     * Confirms that selecting another tool does not
-     * erase previously completed maintenance tasks.
+     * Verifies that touch detection matches the
+     * screws, cover, component, and diagnostic port.
      */
     @Test
-    fun changingToolsPreservesRepairProgress() {
+    fun geometryMatchesInteractiveParts() {
 
-        val inspected = completeStep(session()).session
+        val session = RoboticRepairSimulator.start(
+            order()
+        )
 
-        val changed = RoboticRepairSimulator.selectTool(
-            session = inspected,
-            tool = RepairTool.ISOLATION_CLAMP
+        for (
+        (screw, center) in
+        SatelliteRepairGeometry.screwLocations
+        ) {
+
+            assertEquals(
+                screw,
+                SatelliteRepairGeometry.hitTest(
+                    center.first,
+                    center.second,
+                    session
+                )
+            )
+        }
+
+        assertEquals(
+            RepairHotspot.ACCESS_PANEL,
+            SatelliteRepairGeometry.hitTest(
+                200f,
+                160f,
+                session
+            )
+        )
+
+        val open = session.copy(
+            panelOpen = true
         )
 
         assertEquals(
-            RepairProcedureStep.ISOLATE,
-            changed.step
+            RepairHotspot.COMPONENT,
+            SatelliteRepairGeometry.hitTest(
+                200f,
+                163f,
+                open
+            )
+        )
+
+        assertEquals(
+            RepairHotspot.ACCESS_PANEL,
+            SatelliteRepairGeometry.hitTest(
+                315f,
+                160f,
+                open
+            )
+        )
+
+        assertEquals(
+            RepairHotspot.COMPONENT_SOCKET,
+            SatelliteRepairGeometry.hitTest(
+                200f,
+                163f,
+                open.copy(
+                    partCondition =
+                        RepairPartCondition.REMOVED
+                )
+            )
+        )
+
+        assertEquals(
+            RepairHotspot.DIAGNOSTIC_PORT,
+            SatelliteRepairGeometry.hitTest(
+                343f,
+                43f,
+                session
+            )
         )
     }
 }
-
