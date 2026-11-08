@@ -5,10 +5,8 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -33,12 +31,14 @@ import com.example.orbitalcommand.model.RepairWorkOrder
 import com.example.orbitalcommand.ui.theme.OrbitalColors
 
 /**
- * Displays persistent satellite equipment damage,
- * fleet-wide maintenance orders, and repair controls.
+ * Displays persistent equipment damage and
+ * fleet-wide maintenance work orders.
  *
- * Repair availability is determined by the shared
- * RepairCompletionPolicy, keeping the interface
- * consistent with the ViewModel's validation.
+ * Normal in-orbit repair completion occurs through
+ * the interactive robotic repair procedure.
+ *
+ * The docked completion action remains available
+ * for explicit simulator debugging.
  */
 @Composable
 fun RepairOperationsPanel(
@@ -84,7 +84,7 @@ fun RepairOperationsPanel(
             Text(
                 text = "Equipment damage simulation",
                 color = OrbitalColors.Muted,
-                fontSize = 13.sp
+                fontSize = 12.sp
             )
 
             Text(
@@ -148,13 +148,6 @@ fun RepairOperationsPanel(
                     fontSize = 12.sp
                 )
 
-                Text(
-                    text = "Clearing a temporary fault does not " +
-                            "repair damaged equipment.",
-                    color = OrbitalColors.Muted,
-                    fontSize = 11.sp
-                )
-
             } else {
 
                 Text(
@@ -189,10 +182,11 @@ fun RepairOperationsPanel(
 
                 activeOrders.forEach { order ->
 
-                    val readiness = RepairCompletionPolicy.evaluate(
-                        state = state,
-                        order = order
-                    )
+                    val readiness =
+                        RepairCompletionPolicy.evaluate(
+                            state = state,
+                            order = order
+                        )
 
                     RepairOrderCard(
                         order = order,
@@ -203,7 +197,7 @@ fun RepairOperationsPanel(
                         onQueue = {
                             onQueueRepair(order.id)
                         },
-                        onComplete = {
+                        onDebugComplete = {
                             onCompleteRepair(order.id)
                         }
                     )
@@ -237,8 +231,9 @@ fun RepairOperationsPanel(
             }
 
             Text(
-                text = "Repair completion is simulated. " +
-                        "No physical hardware procedure is modeled.",
+                text = "In-orbit maintenance is performed in " +
+                        "the Robotic Repair Console under " +
+                        "Orbital Servicing Operations.",
                 color = OrbitalColors.Muted,
                 fontSize = 11.sp
             )
@@ -247,8 +242,10 @@ fun RepairOperationsPanel(
 }
 
 /**
- * Displays the selected maintenance request and
- * the actions currently available to the operator.
+ * Displays an individual repair work order.
+ *
+ * In-orbit servicing requires the interactive
+ * robotic repair console.
  */
 @Composable
 private fun RepairOrderCard(
@@ -256,17 +253,17 @@ private fun RepairOrderCard(
     readiness: RepairCompletionStatus,
     onInspect: () -> Unit,
     onQueue: () -> Unit,
-    onComplete: () -> Unit
+    onDebugComplete: () -> Unit
 ) {
 
     val queued = order.status == RepairStatus.QUEUED
 
     Card(
         modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(
             containerColor = OrbitalColors.PanelRaised
-        ),
-        shape = RoundedCornerShape(12.dp)
+        )
     ) {
 
         Column(
@@ -285,8 +282,8 @@ private fun RepairOrderCard(
                 Text(
                     text = "WORK ORDER #${order.id}",
                     color = Color.White,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 13.sp
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold
                 )
 
                 Text(
@@ -349,37 +346,37 @@ private fun RepairOrderCard(
 
             } else if (queued) {
 
-                Button(
-                    onClick = onComplete,
-                    enabled = readiness.isAllowed,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        text = "Simulate Repair Completion",
-                        fontSize = 12.sp
-                    )
-                }
-
-                Text(
-                    text = readiness.description,
-                    color = if (readiness.isAllowed)
-                        OrbitalColors.Healthy
-                    else
-                        OrbitalColors.Warning,
-                    fontSize = 11.sp
-                )
-
                 if (
                     readiness ==
-                    RepairCompletionStatus.READY_IN_FORMATION
+                    RepairCompletionStatus.READY_AT_STATION
                 ) {
 
+                    OutlinedButton(
+                        onClick = onDebugComplete,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "Debug: Complete Without Robot",
+                            fontSize = 12.sp
+                        )
+                    }
+
                     Text(
-                        text = "The vehicle will remain in " +
-                                "formation after completion. " +
-                                "Return it to OS-001 separately.",
+                        text = "Simulator testing only. This " +
+                                "bypasses the robotic procedure.",
                         color = OrbitalColors.Muted,
                         fontSize = 11.sp
+                    )
+
+                } else {
+
+                    Text(
+                        text = "Complete this work order using " +
+                                "the interactive robotic repair " +
+                                "console while SERVICER-01 is " +
+                                "following its assigned satellite.",
+                        color = OrbitalColors.Accent,
+                        fontSize = 12.sp
                     )
                 }
             }
