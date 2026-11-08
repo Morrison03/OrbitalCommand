@@ -19,12 +19,12 @@ import com.example.orbitalcommand.model.RepairWorkOrder
 import com.example.orbitalcommand.ui.theme.OrbitalColors
 
 /**
- * Displays equipment damage controls and the
- * fleet-wide satellite maintenance queue.
+ * Displays persistent equipment damage and
+ * fleet-wide maintenance work orders.
  *
- * Repair completion is currently a test-only action.
- * Future robotic servicing operations will provide
- * the completion signal automatically.
+ * A work order assigned to a deployed servicing
+ * vehicle cannot be completed through the
+ * test-only maintenance control.
  */
 @Composable
 fun RepairOperationsPanel(
@@ -41,7 +41,9 @@ fun RepairOperationsPanel(
         .sortedByDescending { it.id }
 
     val completedOrders = state.repairOrders
-        .filter { it.status == RepairStatus.COMPLETED }
+        .filter {
+            it.status == RepairStatus.COMPLETED
+        }
         .sortedByDescending { it.id }
         .take(3)
 
@@ -157,25 +159,13 @@ fun RepairOperationsPanel(
                 color = OrbitalColors.PanelRaised
             )
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement =
-                    Arrangement.SpaceBetween
-            ) {
-
-                Text(
-                    text = "ACTIVE WORK ORDERS",
-                    color = Color.White,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold
-                )
-
-                Text(
-                    text = "${activeOrders.size} active",
-                    color = OrbitalColors.Muted,
-                    fontSize = 12.sp
-                )
-            }
+            Text(
+                text = "ACTIVE WORK ORDERS " +
+                        "(${activeOrders.size})",
+                color = Color.White,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold
+            )
 
             if (activeOrders.isEmpty()) {
 
@@ -189,8 +179,16 @@ fun RepairOperationsPanel(
 
                 activeOrders.forEach { order ->
 
+                    val vehicleAssignedAndAway =
+                        state.servicingVehicle
+                            .isAwayFromStation &&
+                                state.servicingVehicle
+                                    .workOrderId == order.id
+
                     RepairOrderCard(
                         order = order,
+                        completionAllowed =
+                            !vehicleAssignedAndAway,
                         onInspect = {
                             onSelectSatellite(order.satelliteId)
                         },
@@ -231,9 +229,10 @@ fun RepairOperationsPanel(
             }
 
             Text(
-                text = "Simulation-only maintenance workflow. " +
-                        "Physical servicing and robotic control " +
-                        "are not yet implemented.",
+                text = "Repair completion remains a " +
+                        "simulation-only test action. " +
+                        "Approaching a satellite does not " +
+                        "repair its equipment.",
                 color = OrbitalColors.Muted,
                 fontSize = 11.sp
             )
@@ -242,12 +241,13 @@ fun RepairOperationsPanel(
 }
 
 /**
- * Displays one outstanding maintenance request and
- * the actions available for its current status.
+ * Displays an individual repair request
+ * and the available maintenance actions.
  */
 @Composable
 private fun RepairOrderCard(
     order: RepairWorkOrder,
+    completionAllowed: Boolean,
     onInspect: () -> Unit,
     onQueue: () -> Unit,
     onComplete: () -> Unit
@@ -331,6 +331,7 @@ private fun RepairOrderCard(
                 onClick = onInspect,
                 modifier = Modifier.fillMaxWidth()
             ) {
+
                 Text("Inspect Satellite")
             }
 
@@ -340,6 +341,7 @@ private fun RepairOrderCard(
                     onClick = onQueue,
                     modifier = Modifier.fillMaxWidth()
                 ) {
+
                     Text("Queue Repair")
                 }
 
@@ -347,22 +349,35 @@ private fun RepairOrderCard(
 
                 Button(
                     onClick = onComplete,
+                    enabled = completionAllowed,
                     modifier = Modifier.fillMaxWidth()
                 ) {
+
                     Text(
                         text = "Simulate Repair Completion",
                         fontSize = 12.sp
                     )
                 }
 
-                Text(
-                    text = "Test action: assumes the required " +
-                            "maintenance has been completed.",
-                    color = OrbitalColors.Muted,
-                    fontSize = 11.sp
-                )
+                if (!completionAllowed) {
+
+                    Text(
+                        text = "Repair completion is disabled " +
+                                "while the assigned servicing vehicle " +
+                                "is away from OS-001.",
+                        color = OrbitalColors.Warning,
+                        fontSize = 12.sp
+                    )
+                } else {
+
+                    Text(
+                        text = "Test action: assumes successful " +
+                                "maintenance without robotic servicing.",
+                        color = OrbitalColors.Muted,
+                        fontSize = 11.sp
+                    )
+                }
             }
         }
     }
 }
-

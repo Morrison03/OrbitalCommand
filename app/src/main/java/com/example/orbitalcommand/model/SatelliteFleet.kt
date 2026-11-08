@@ -4,9 +4,6 @@ package com.example.orbitalcommand.model
 /**
  * Defines temporary diagnostic faults supported
  * by the satellite simulation.
- *
- * These faults are independent of persistent
- * equipment damage requiring maintenance.
  */
 enum class SatelliteFault(
     val displayName: String,
@@ -95,13 +92,13 @@ object SatelliteCatalog {
 }
 
 /**
- * Represents the operational state of one spacecraft.
+ * Represents the operating state of one spacecraft.
  *
- * telemetry is the last packet successfully received
+ * telemetry contains the last packet received
  * by mission control.
  *
- * onboardTelemetry contains the internally modeled
- * state, including during a communications outage.
+ * onboardTelemetry contains internally calculated
+ * simulation state during communication outages.
  */
 data class SatelliteState(
     val definition: SatelliteDefinition,
@@ -115,40 +112,42 @@ data class SatelliteState(
 ) {
 
     /**
-     * Indicates whether telemetry transmission
-     * is currently possible.
+     * Indicates whether the satellite is capable
+     * of transmitting telemetry.
      */
     val isConnected: Boolean
         get() = fault != SatelliteFault.COMMUNICATION_LOSS &&
                 onboardTelemetry.powerMode != PowerMode.OFFLINE
 
     /**
-     * Indicates whether any simulated diagnostic
-     * fault or persistent equipment damage is active.
+     * Indicates whether a temporary fault or
+     * persistent equipment damage is active.
      */
     val hasFault: Boolean
         get() = fault != SatelliteFault.NONE ||
                 equipmentDamage != EquipmentDamage.NONE
 
     /**
-     * Indicates whether a maintenance operation
-     * is required to repair physical equipment.
+     * Indicates whether equipment servicing
+     * is required.
      */
     val requiresServicing: Boolean
         get() = equipmentDamage != EquipmentDamage.NONE
 
     /**
-     * Indicates whether the internal power system
-     * is in the depleted/offline state.
+     * Indicates whether the simulated electrical
+     * power system is offline.
      */
     val isPowerDepleted: Boolean
         get() = onboardTelemetry.powerMode == PowerMode.OFFLINE
 
     /**
-     * Returns the age of the last successfully
+     * Returns the age of the most recently
      * received telemetry packet.
      */
-    fun packetAgeSeconds(elapsedSeconds: Int): Int {
+    fun packetAgeSeconds(
+        elapsedSeconds: Int
+    ): Int {
 
         return (
                 elapsedSeconds - telemetry.sampleSecond
@@ -157,11 +156,11 @@ data class SatelliteState(
 }
 
 /**
- * Represents all observable mission-control state.
+ * Represents the complete observable state of
+ * Orbital Command's mission-control interface.
  *
- * Includes satellite telemetry, operational events,
- * repair work orders, the servicing station, and
- * the currently prepared servicing mission.
+ * The servicing station and servicing vehicle are
+ * distinct simulation entities.
  */
 data class OrbitalUiState(
     val elapsedSeconds: Int,
@@ -171,12 +170,13 @@ data class OrbitalUiState(
     val repairOrders: List<RepairWorkOrder> = emptyList(),
     val servicingStation: ServicingStation =
         OrbitalServicing.stationAt(0),
-    val preparedMission: ServicingMissionPlan? = null
+    val preparedMission: ServicingMissionPlan? = null,
+    val servicingVehicle: ServicingVehicleState =
+        ServicingVehicleState.dockedAt(servicingStation)
 ) {
 
     /**
-     * Returns the satellite currently selected
-     * for detailed inspection.
+     * Returns the currently selected satellite.
      */
     val selectedSatellite: SatelliteState
         get() = satellites.first {
@@ -184,8 +184,8 @@ data class OrbitalUiState(
         }
 
     /**
-     * Counts satellites experiencing temporary
-     * faults or persistent equipment damage.
+     * Counts satellites with temporary faults
+     * or persistent equipment damage.
      */
     val faultCount: Int
         get() = satellites.count { it.hasFault }
@@ -197,8 +197,8 @@ data class OrbitalUiState(
         get() = events.filter { it.isActive }
 
     /**
-     * Counts alerts that have not yet been
-     * acknowledged by an operator.
+     * Counts unresolved alerts awaiting
+     * operator acknowledgement.
      */
     val unacknowledgedAlertCount: Int
         get() = activeAlerts.count {
@@ -206,14 +206,13 @@ data class OrbitalUiState(
         }
 
     /**
-     * Returns repair requests that have not
-     * been marked as completed.
+     * Returns all outstanding repair requests.
      */
     val activeRepairOrders: List<RepairWorkOrder>
         get() = repairOrders.filter { it.isActive }
 
     /**
-     * Counts maintenance requests awaiting servicing.
+     * Counts repair requests queued for servicing.
      */
     val queuedRepairCount: Int
         get() = activeRepairOrders.count {

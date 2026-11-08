@@ -11,35 +11,78 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.orbitalcommand.model.OrbitalDisplayGeometry
 import com.example.orbitalcommand.model.OrbitalUiState
 import com.example.orbitalcommand.model.RepairStatus
 import com.example.orbitalcommand.model.RepairWorkOrder
-import com.example.orbitalcommand.model.ServicingMissionPlan
+import com.example.orbitalcommand.model.ServicingVehiclePhase
 import com.example.orbitalcommand.ui.theme.OrbitalColors
+import com.example.orbitalcommand.simulation.ServicingVehicleNavigation
 import java.util.Locale
 
 /**
- * Displays the simulated servicing station and
- * operator controls for preparing maintenance missions.
+ * Displays servicing station status and operator
+ * controls for preparing and deploying a repair vehicle.
  *
- * Mission preparation does not dispatch a spacecraft,
- * change equipment state, or complete repair work.
+ * The current navigation system is a simplified
+ * scripted simulation, not physical spacecraft guidance.
  */
 @Composable
 fun ServicingMissionPanel(
     state: OrbitalUiState,
     onPrepareMission: (Long) -> Unit,
     onCancelMission: () -> Unit,
+    onDispatchVehicle: () -> Unit,
+    onBeginApproach: () -> Unit,
+    onHoldVehicle: () -> Unit,
+    onResumeApproach: () -> Unit,
+    onReturnVehicle: () -> Unit,
     onSelectSatellite: (String) -> Unit
 ) {
 
     val station = state.servicingStation
+    val vehicle = state.servicingVehicle
+    val plan = state.preparedMission
 
     val queuedOrders = state.activeRepairOrders.filter {
         it.status == RepairStatus.QUEUED
     }
 
-    val preparedMission = state.preparedMission
+    val target = state.satellites.firstOrNull {
+        it.definition.id == plan?.targetSatelliteId
+    }
+
+    val targetVerified = target?.let {
+        ServicingVehicleNavigation.hasCurrentTargetTelemetry(
+            it,
+            state.elapsedSeconds
+        )
+    } == true
+
+    val dispatchReady = plan?.let {
+        ServicingVehicleNavigation.isDispatchReady(
+            plan = it,
+            orders = state.repairOrders,
+            satellites = state.satellites,
+            atSecond = state.elapsedSeconds
+        )
+    } == true
+
+    val vehicleColor = when (vehicle.phase) {
+
+        ServicingVehiclePhase.DOCKED ->
+            OrbitalColors.Healthy
+
+        ServicingVehiclePhase.DEPLOYED,
+        ServicingVehiclePhase.APPROACHING ->
+            OrbitalColors.Accent
+
+        ServicingVehiclePhase.HOLDING ->
+            Color(0xFFFBBF24)
+
+        ServicingVehiclePhase.RETURNING ->
+            Color(0xFFA78BFA)
+    }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -57,46 +100,48 @@ fun ServicingMissionPanel(
         ) {
 
             Text(
-                text = "ORBITAL SERVICING STATION",
+                text = "ORBITAL SERVICING OPERATIONS",
                 color = Color.White,
                 fontSize = 15.sp,
                 fontWeight = FontWeight.Bold
             )
 
+            Text(
+                text = "${station.id} • ${station.name}",
+                color = OrbitalColors.Accent,
+                fontSize = 13.sp
+            )
+
+            Text(
+                text = "SERVICING VEHICLE",
+                color = OrbitalColors.Muted,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold
+            )
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                horizontalArrangement =
+                    Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
 
-                Column(
-                    verticalArrangement =
-                        Arrangement.spacedBy(4.dp)
-                ) {
-
-                    Text(
-                        text = station.id,
-                        color = OrbitalColors.Accent,
-                        fontSize = 19.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-
-                    Text(
-                        text = station.name,
-                        color = OrbitalColors.Muted,
-                        fontSize = 12.sp
-                    )
-                }
+                Text(
+                    text = vehicle.id,
+                    color = Color.White,
+                    fontSize = 19.sp,
+                    fontWeight = FontWeight.Bold
+                )
 
                 Text(
-                    text = "PLANNING ONLINE",
-                    color = OrbitalColors.Healthy,
-                    fontSize = 11.sp,
+                    text = vehicle.phase.displayName.uppercase(),
+                    color = vehicleColor,
+                    fontSize = 12.sp,
                     fontWeight = FontWeight.Bold
                 )
             }
 
-            ServicingDetailRow(
+            DetailRow(
                 label = "Station orbit angle",
                 value = String.format(
                     Locale.US,
@@ -105,48 +150,257 @@ fun ServicingMissionPanel(
                 )
             )
 
-            ServicingDetailRow(
+            DetailRow(
                 label = "Queued work orders",
                 value = queuedOrders.size.toString()
             )
 
-            ServicingDetailRow(
-                label = "Mission preparation",
-                value = if (preparedMission == null)
-                    "AVAILABLE"
-                else
-                    "PREPARED",
-                valueColor = if (preparedMission == null)
-                    OrbitalColors.Healthy
-                else
-                    Color(0xFFFBBF24)
-            )
+            if (vehicle.holdReason != null) {
+
+                Text(
+                    text = "HOLD REASON: " +
+                            vehicle.holdReason.displayName,
+                    color = Color(0xFFFBBF24),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
 
             HorizontalDivider(
                 color = OrbitalColors.PanelRaised
             )
 
-            if (preparedMission != null) {
+            if (plan == null) {
 
-                PreparedMissionCard(
-                    plan = preparedMission,
-                    state = state,
-                    onInspect = {
-                        onSelectSatellite(
-                            preparedMission.targetSatelliteId
-                        )
-                    },
-                    onCancel = onCancelMission
+                Text(
+                    text = "NO MISSION PREPARED",
+                    color = OrbitalColors.Muted,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp
+                )
+
+                Text(
+                    text = "Select a queued repair work order " +
+                            "below to prepare a servicing mission.",
+                    color = OrbitalColors.Muted,
+                    fontSize = 12.sp
                 )
 
             } else {
 
                 Text(
-                    text = "NO MISSION PREPARED",
-                    color = OrbitalColors.Muted,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold
+                    text = "CURRENT MISSION",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp
                 )
+
+                DetailRow(
+                    label = "Work order",
+                    value = "#${plan.workOrderId}"
+                )
+
+                DetailRow(
+                    label = "Target satellite",
+                    value = plan.targetSatelliteId
+                )
+
+                DetailRow(
+                    label = "Repair objective",
+                    value = plan.damage.repairAction
+                )
+
+                DetailRow(
+                    label = "Prepared at",
+                    value = "T+${plan.preparedAtSecond}s"
+                )
+
+                DetailRow(
+                    label = "Target telemetry",
+                    value = if (targetVerified)
+                        "CURRENT"
+                    else
+                        "UNAVAILABLE / STALE",
+                    valueColor = if (targetVerified)
+                        OrbitalColors.Healthy
+                    else
+                        OrbitalColors.Warning
+                )
+
+                if (plan.telemetryVerificationRequired) {
+
+                    Text(
+                        text = "Target verification was required " +
+                                "when this mission was prepared. " +
+                                "Current telemetry is checked again " +
+                                "before dispatch or approach.",
+                        color = Color(0xFFFBBF24),
+                        fontSize = 12.sp
+                    )
+                }
+
+                if (vehicle.isAwayFromStation) {
+
+                    val separation = if (
+                        targetVerified && target != null
+                    ) {
+
+                        val targetPosition =
+                            OrbitalDisplayGeometry.onOrbit(
+                                target.telemetry.orbitAngleDegrees,
+                                target.definition.orbitRadiusFraction
+                            )
+
+                        vehicle.position.distanceTo(
+                            targetPosition
+                        )
+
+                    } else {
+                        null
+                    }
+
+                    DetailRow(
+                        label = "Target separation",
+                        value = if (separation == null)
+                            "UNVERIFIED"
+                        else
+                            String.format(
+                                Locale.US,
+                                "%.3f display units",
+                                separation
+                            )
+                    )
+
+                    Text(
+                        text = "Display units are not physical " +
+                                "distances or real navigation measurements.",
+                        color = OrbitalColors.Muted,
+                        fontSize = 11.sp
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        onSelectSatellite(plan.targetSatelliteId)
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+
+                    Text("Inspect Target Satellite")
+                }
+
+                when (vehicle.phase) {
+
+                    ServicingVehiclePhase.DOCKED -> {
+
+                        Button(
+                            onClick = onDispatchVehicle,
+                            enabled = dispatchReady,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+
+                            Text("Dispatch Servicing Vehicle")
+                        }
+
+                        if (!dispatchReady) {
+
+                            Text(
+                                text = "Dispatch unavailable: " +
+                                        "the target must have current telemetry, " +
+                                        "matching damage, and a queued work order.",
+                                color = OrbitalColors.Warning,
+                                fontSize = 12.sp
+                            )
+                        }
+
+                        OutlinedButton(
+                            onClick = onCancelMission,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+
+                            Text("Cancel Mission Preparation")
+                        }
+                    }
+
+                    ServicingVehiclePhase.DEPLOYED -> {
+
+                        Button(
+                            onClick = onBeginApproach,
+                            enabled = targetVerified,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+
+                            Text("Begin Guided Approach")
+                        }
+
+                        if (!targetVerified) {
+
+                            Text(
+                                text = "Guided approach requires current " +
+                                        "target telemetry. You can still " +
+                                        "command a return to the station.",
+                                color = OrbitalColors.Warning,
+                                fontSize = 12.sp
+                            )
+                        }
+
+                        ReturnButton(onReturnVehicle)
+                    }
+
+                    ServicingVehiclePhase.APPROACHING -> {
+
+                        Button(
+                            onClick = onHoldVehicle,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+
+                            Text("Hold Vehicle Position")
+                        }
+
+                        ReturnButton(onReturnVehicle)
+                    }
+
+                    ServicingVehiclePhase.HOLDING -> {
+
+                        Text(
+                            text = if (
+                                vehicle.holdReason ==
+                                com.example.orbitalcommand.model
+                                    .VehicleHoldReason.TARGET_STANDOFF
+                            ) {
+                                "Simulated target standoff reached. " +
+                                        "No inspection or repair has been performed."
+                            } else {
+                                "The vehicle is stationary in the " +
+                                        "schematic orbital display."
+                            },
+                            color = Color(0xFFFBBF24),
+                            fontSize = 12.sp
+                        )
+
+                        Button(
+                            onClick = onResumeApproach,
+                            enabled = targetVerified,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+
+                            Text("Resume Guided Approach")
+                        }
+
+                        ReturnButton(onReturnVehicle)
+                    }
+
+                    ServicingVehiclePhase.RETURNING -> {
+
+                        Text(
+                            text = "SERVICER-01 is navigating back " +
+                                    "toward the moving OS-001 station. " +
+                                    "Docking occurs automatically.",
+                            color = OrbitalColors.Accent,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
             }
 
             HorizontalDivider(
@@ -164,8 +418,8 @@ fun ServicingMissionPanel(
 
                 Text(
                     text = "No queued repairs are available. " +
-                            "Create equipment damage and queue " +
-                            "its work order in Repair Operations.",
+                            "Create and queue a repair work order " +
+                            "in Satellite Repair Operations.",
                     color = OrbitalColors.Muted,
                     fontSize = 12.sp
                 )
@@ -176,10 +430,11 @@ fun ServicingMissionPanel(
 
                     ServicingRequestCard(
                         order = order,
-                        canPrepare = preparedMission == null,
+                        canPrepare =
+                            plan == null &&
+                                    !vehicle.isAwayFromStation,
                         isPrepared =
-                            preparedMission?.workOrderId ==
-                                    order.id,
+                            plan?.workOrderId == order.id,
                         onPrepare = {
                             onPrepareMission(order.id)
                         }
@@ -188,9 +443,10 @@ fun ServicingMissionPanel(
             }
 
             Text(
-                text = "Mission preparation records the target " +
-                        "and servicing objective. Vehicle dispatch, " +
-                        "rendezvous, and repair controls are not yet enabled.",
+                text = "Guided vehicle movement is scripted. " +
+                        "Gamepad control, physical rendezvous, " +
+                        "and actual repair operations are not " +
+                        "implemented in this version.",
                 color = OrbitalColors.Muted,
                 fontSize = 11.sp
             )
@@ -199,127 +455,26 @@ fun ServicingMissionPanel(
 }
 
 /**
- * Displays the details of a prepared servicing mission.
- *
- * The current target connection is shown separately
- * from its condition at preparation time.
+ * Displays the return command used by all active
+ * vehicle operation states except returning.
  */
 @Composable
-private fun PreparedMissionCard(
-    plan: ServicingMissionPlan,
-    state: OrbitalUiState,
-    onInspect: () -> Unit,
-    onCancel: () -> Unit
+private fun ReturnButton(
+    onReturnVehicle: () -> Unit
 ) {
 
-    val target = state.satellites.firstOrNull {
-        it.definition.id == plan.targetSatelliteId
-    }
-
-    val hasLiveTelemetry = target?.isConnected == true
-
-    Card(
-        colors = CardDefaults.cardColors(
-            containerColor = OrbitalColors.PanelRaised
-        ),
-        shape = RoundedCornerShape(12.dp)
+    OutlinedButton(
+        onClick = onReturnVehicle,
+        modifier = Modifier.fillMaxWidth()
     ) {
 
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-
-            Text(
-                text = "MISSION PREPARED",
-                color = Color(0xFFFBBF24),
-                fontWeight = FontWeight.Bold,
-                fontSize = 12.sp
-            )
-
-            ServicingDetailRow(
-                label = "Repair work order",
-                value = "#${plan.workOrderId}"
-            )
-
-            ServicingDetailRow(
-                label = "Target satellite",
-                value = plan.targetSatelliteId
-            )
-
-            ServicingDetailRow(
-                label = "Repair objective",
-                value = plan.damage.repairAction
-            )
-
-            ServicingDetailRow(
-                label = "Prepared at",
-                value = "T+${plan.preparedAtSecond}s"
-            )
-
-            ServicingDetailRow(
-                label = "Current target telemetry",
-                value = if (hasLiveTelemetry)
-                    "AVAILABLE"
-                else
-                    "UNAVAILABLE",
-                valueColor = if (hasLiveTelemetry)
-                    OrbitalColors.Healthy
-                else
-                    OrbitalColors.Warning
-            )
-
-            if (plan.telemetryVerificationRequired) {
-
-                Text(
-                    text = "PREPARATION WARNING: " +
-                            "The target's position or telemetry " +
-                            "requires independent verification " +
-                            "before a future dispatch.",
-                    color = OrbitalColors.Warning,
-                    fontSize = 12.sp
-                )
-            }
-
-            if (!hasLiveTelemetry) {
-
-                Text(
-                    text = "The orbital view may show the " +
-                            "target's last received position, " +
-                            "not its verified current position.",
-                    color = OrbitalColors.Warning,
-                    fontSize = 12.sp
-                )
-            }
-
-            Text(
-                text = "Status: Awaiting future dispatch capability",
-                color = OrbitalColors.Muted,
-                fontSize = 12.sp
-            )
-
-            OutlinedButton(
-                onClick = onInspect,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Inspect Target Satellite")
-            }
-
-            OutlinedButton(
-                onClick = onCancel,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Cancel Mission Preparation")
-            }
-        }
+        Text("Return to Servicing Station")
     }
 }
 
 /**
- * Displays a queued maintenance request that
- * is eligible for mission preparation.
+ * Displays a queued maintenance request
+ * available for mission preparation.
  */
 @Composable
 private fun ServicingRequestCard(
@@ -363,18 +518,18 @@ private fun ServicingRequestCard(
                 )
             }
 
-            ServicingDetailRow(
+            DetailRow(
                 label = "Target",
                 value = order.satelliteId
             )
 
-            ServicingDetailRow(
+            DetailRow(
                 label = "Equipment",
                 value = order.damage.displayName
             )
 
-            ServicingDetailRow(
-                label = "Service action",
+            DetailRow(
+                label = "Repair action",
                 value = order.damage.repairAction
             )
 
@@ -383,6 +538,7 @@ private fun ServicingRequestCard(
                 enabled = canPrepare,
                 modifier = Modifier.fillMaxWidth()
             ) {
+
                 Text(
                     text = if (isPrepared)
                         "Mission Already Prepared"
@@ -396,10 +552,10 @@ private fun ServicingRequestCard(
 }
 
 /**
- * Displays a labeled value within a servicing panel.
+ * Displays a labeled value inside the servicing UI.
  */
 @Composable
-private fun ServicingDetailRow(
+private fun DetailRow(
     label: String,
     value: String,
     valueColor: Color = Color.White
@@ -407,7 +563,8 @@ private fun ServicingDetailRow(
 
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
+        horizontalArrangement =
+            Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
 
@@ -431,4 +588,3 @@ private fun ServicingDetailRow(
         )
     }
 }
-
