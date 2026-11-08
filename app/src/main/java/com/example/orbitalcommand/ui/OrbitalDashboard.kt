@@ -18,6 +18,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.orbitalcommand.model.EquipmentDamage
 import com.example.orbitalcommand.model.OrbitalUiState
 import com.example.orbitalcommand.model.PowerMode
 import com.example.orbitalcommand.model.SatelliteFault
@@ -28,7 +29,7 @@ import java.util.Locale
 
 /**
  * Connects observable fleet state and operator actions
- * to the mission-control interface.
+ * to the satellite mission-control interface.
  */
 @Composable
 fun OrbitalRoute(
@@ -42,16 +43,20 @@ fun OrbitalRoute(
         onSelectSatellite = viewModel::selectSatellite,
         onSetFault = viewModel::setFault,
         onClearFault = viewModel::clearFault,
+        onInjectDamage = viewModel::injectEquipmentDamage,
+        onQueueRepair = viewModel::queueRepair,
+        onCompleteRepair = viewModel::completeRepair,
         onAcknowledgeAlert = viewModel::acknowledgeAlert,
         onReset = viewModel::resetSimulation
     )
 }
 
 /**
- * Displays fleet operations, satellite telemetry,
- * mission alerts, diagnostics, and power management.
+ * Displays fleet monitoring, telemetry, mission alerts,
+ * equipment diagnostics, and maintenance operations.
  *
- * The layout adapts to available screen width.
+ * Uses a stacked layout on phones and two columns
+ * on sufficiently wide tablet displays.
  */
 @Composable
 fun OrbitalDashboard(
@@ -59,6 +64,9 @@ fun OrbitalDashboard(
     onSelectSatellite: (String) -> Unit,
     onSetFault: (SatelliteFault) -> Unit,
     onClearFault: () -> Unit,
+    onInjectDamage: (EquipmentDamage) -> Unit,
+    onQueueRepair: (Long) -> Unit,
+    onCompleteRepair: (Long) -> Unit,
     onAcknowledgeAlert: (Long) -> Unit,
     onReset: () -> Unit
 ) {
@@ -111,6 +119,14 @@ fun OrbitalDashboard(
                         OrbitPanel(state)
 
                         FleetOverview(state)
+
+                        RepairOperationsPanel(
+                            state = state,
+                            onInjectDamage = onInjectDamage,
+                            onQueueRepair = onQueueRepair,
+                            onCompleteRepair = onCompleteRepair,
+                            onSelectSatellite = onSelectSatellite
+                        )
 
                         MissionEventHistoryPanel(
                             events = state.events
@@ -169,6 +185,14 @@ fun OrbitalDashboard(
                     onReset = onReset
                 )
 
+                RepairOperationsPanel(
+                    state = state,
+                    onInjectDamage = onInjectDamage,
+                    onQueueRepair = onQueueRepair,
+                    onCompleteRepair = onCompleteRepair,
+                    onSelectSatellite = onSelectSatellite
+                )
+
                 MissionEventHistoryPanel(
                     events = state.events
                 )
@@ -178,8 +202,8 @@ fun OrbitalDashboard(
 }
 
 /**
- * Displays mission identification, fleet health,
- * and the number of alerts requiring acknowledgement.
+ * Displays mission identification, fleet alerts,
+ * and maintenance workload.
  */
 @Composable
 private fun DashboardHeader(
@@ -223,7 +247,7 @@ private fun DashboardHeader(
 
             Text(
                 text = if (state.activeAlerts.isEmpty())
-                    "FLEET NOMINAL"
+                    "NO ACTIVE ALERTS"
                 else
                     "${state.activeAlerts.size} ACTIVE ALERT(S)",
                 color = if (state.activeAlerts.isEmpty())
@@ -241,6 +265,16 @@ private fun DashboardHeader(
                 text = "${state.unacknowledgedAlertCount} " +
                         "alert(s) require acknowledgement",
                 color = OrbitalColors.Warning,
+                fontSize = 12.sp
+            )
+        }
+
+        if (state.activeRepairOrders.isNotEmpty()) {
+
+            Text(
+                text = "${state.activeRepairOrders.size} " +
+                        "outstanding repair work order(s)",
+                color = OrbitalColors.Accent,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.SemiBold
             )
@@ -250,7 +284,7 @@ private fun DashboardHeader(
 
 /**
  * Provides satellite selection and identifies
- * spacecraft with active operational problems.
+ * spacecraft requiring operator attention.
  */
 @Composable
 private fun SatelliteSelector(
@@ -307,8 +341,8 @@ private fun SatelliteSelector(
 }
 
 /**
- * Displays all satellite positions using
- * the existing orbital visualization.
+ * Displays all spacecraft positions using the
+ * existing orbital visualization.
  */
 @Composable
 private fun OrbitPanel(state: OrbitalUiState) {
@@ -345,11 +379,8 @@ private fun OrbitPanel(state: OrbitalUiState) {
 }
 
 /**
- * Displays operational conditions for the fleet.
- *
- * Internal power information is treated as a modeled
- * simulation state rather than verified telemetry
- * when communications are unavailable.
+ * Summarizes operational conditions for
+ * the complete satellite fleet.
  */
 @Composable
 private fun FleetOverview(state: OrbitalUiState) {
@@ -370,7 +401,10 @@ private fun FleetOverview(state: OrbitalUiState) {
                         SatelliteFault.COMMUNICATION_LOSS ->
                     "SIGNAL LOST"
 
-                satellite.hasFault ->
+                satellite.requiresServicing ->
+                    "HARDWARE DAMAGE"
+
+                satellite.fault != SatelliteFault.NONE ->
                     satellite.fault.displayName.uppercase()
 
                 powerMode == PowerMode.SAFE_MODE ->
@@ -393,8 +427,8 @@ private fun FleetOverview(state: OrbitalUiState) {
 }
 
 /**
- * Displays the last measurements received from
- * the selected satellite.
+ * Displays the most recently received measurements
+ * for the selected spacecraft.
  */
 @Composable
 private fun TelemetryPanel(
@@ -482,8 +516,8 @@ private fun TelemetryPanel(
 }
 
 /**
- * Displays the historical measurements
- * received from the selected satellite.
+ * Displays historical telemetry for the
+ * currently selected satellite.
  */
 @Composable
 private fun TelemetryHistoryPanel(
@@ -500,8 +534,10 @@ private fun TelemetryHistoryPanel(
 }
 
 /**
- * Displays reported subsystem health and warns
- * when measurements cannot be verified.
+ * Displays subsystem health and equipment damage.
+ *
+ * When communications are unavailable, received
+ * subsystem health cannot be independently verified.
  */
 @Composable
 private fun SystemHealthPanel(
@@ -509,6 +545,7 @@ private fun SystemHealthPanel(
 ) {
 
     val fault = satellite.fault
+    val damage = satellite.equipmentDamage
     val telemetry = satellite.telemetry
 
     DashboardPanel(title = "SYSTEM DIAGNOSTICS") {
@@ -537,14 +574,20 @@ private fun SystemHealthPanel(
 
             val powerWarning =
                 fault == SatelliteFault.POWER_DRAIN ||
+                        damage ==
+                        EquipmentDamage.SOLAR_ARRAY_DAMAGE ||
                         telemetry.batteryPercent < 25.0
 
             val thermalWarning =
                 fault == SatelliteFault.THERMAL_OVERLOAD ||
+                        damage ==
+                        EquipmentDamage.THERMAL_RADIATOR_DAMAGE ||
                         telemetry.temperatureC > 40.0
 
             val payloadWarning =
-                fault == SatelliteFault.PAYLOAD_FAILURE
+                fault == SatelliteFault.PAYLOAD_FAILURE ||
+                        damage ==
+                        EquipmentDamage.PAYLOAD_SENSOR_DAMAGE
 
             StatusRow(
                 label = "Power subsystem",
@@ -596,12 +639,24 @@ private fun SystemHealthPanel(
                 "OFFLINE",
             warning = !satellite.isConnected
         )
+
+        if (satellite.requiresServicing) {
+
+            Text(
+                text = "SIMULATED HARDWARE DAMAGE: " +
+                        damage.displayName,
+                color = OrbitalColors.Warning,
+                fontSize = 12.sp
+            )
+        }
     }
 }
 
 /**
- * Provides controls for injecting or clearing
- * spacecraft faults and resetting the fleet.
+ * Provides controls for temporary diagnostic faults.
+ *
+ * Persistent equipment damage is managed separately
+ * through the repair operations workflow.
  */
 @Composable
 private fun FaultControlPanel(
@@ -621,7 +676,7 @@ private fun FaultControlPanel(
         )
 
         Text(
-            text = "Select a fault to simulate:",
+            text = "Temporary diagnostic faults:",
             color = Color.White,
             fontSize = 13.sp
         )
@@ -654,27 +709,35 @@ private fun FaultControlPanel(
 
         Text(
             text = satellite.fault.description,
-            color = if (satellite.hasFault)
+            color = if (
+                satellite.fault != SatelliteFault.NONE
+            ) {
                 OrbitalColors.Warning
-            else
-                OrbitalColors.Muted,
+            } else {
+                OrbitalColors.Muted
+            },
             fontSize = 12.sp
         )
 
         OutlinedButton(
             onClick = onClearFault,
-            enabled = satellite.hasFault,
+            enabled = satellite.fault != SatelliteFault.NONE,
             modifier = Modifier.fillMaxWidth()
         ) {
-
-            Text("Clear Selected Satellite Fault")
+            Text("Clear Temporary Fault")
         }
+
+        Text(
+            text = "Equipment damage requires completion " +
+                    "of a repair work order.",
+            color = OrbitalColors.Muted,
+            fontSize = 11.sp
+        )
 
         OutlinedButton(
             onClick = onReset,
             modifier = Modifier.fillMaxWidth()
         ) {
-
             Text("Reset Entire Simulation")
         }
 
@@ -687,8 +750,8 @@ private fun FaultControlPanel(
 }
 
 /**
- * Provides a reusable container for
- * mission-control dashboard sections.
+ * Provides a shared container for
+ * dashboard information sections.
  */
 @Composable
 private fun DashboardPanel(
@@ -725,7 +788,7 @@ private fun DashboardPanel(
 }
 
 /**
- * Displays one formatted satellite measurement.
+ * Displays a formatted telemetry measurement.
  */
 @Composable
 private fun TelemetryCard(
@@ -764,7 +827,7 @@ private fun TelemetryCard(
 }
 
 /**
- * Displays a subsystem's current operational status.
+ * Displays the condition of one spacecraft subsystem.
  */
 @Composable
 private fun StatusRow(
@@ -787,9 +850,7 @@ private fun StatusRow(
             modifier = Modifier.weight(1f)
         )
 
-        Spacer(
-            modifier = Modifier.width(8.dp)
-        )
+        Spacer(modifier = Modifier.width(8.dp))
 
         Text(
             text = status,

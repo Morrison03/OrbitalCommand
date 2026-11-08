@@ -1,6 +1,7 @@
 
 package com.example.orbitalcommand.simulation
 
+import com.example.orbitalcommand.model.EquipmentDamage
 import com.example.orbitalcommand.model.PowerMode
 import com.example.orbitalcommand.model.SatelliteFault
 import com.example.orbitalcommand.model.SolarExposure
@@ -18,14 +19,13 @@ data class PowerSnapshot(
 )
 
 /**
- * Simulates electrical generation, consumption,
+ * Simulates solar generation, electrical consumption,
  * battery depletion, and automatic power recovery.
  *
- * The model uses an accelerated sunlight/eclipsing cycle
- * and simplified charge/discharge rates.
+ * Persistent solar array damage reduces generation
+ * until an explicit servicing operation is completed.
  *
- * It is designed to support user-interface testing
- * rather than physical spacecraft power analysis.
+ * All power behavior is accelerated for UI testing.
  */
 object SatellitePowerSystem {
 
@@ -33,18 +33,12 @@ object SatellitePowerSystem {
     const val SUNLIGHT_SECONDS = 35
 
     private const val SOLAR_GENERATION_WATTS = 150.0
-
-    /**
-     * Converts the simulated power balance into a
-     * battery percentage change per simulation second.
-     */
+    private const val DAMAGED_ARRAY_EFFICIENCY = 0.10
     private const val CHARGE_FACTOR = 0.0018
 
     /**
-     * Returns the satellite's current solar exposure.
-     *
-     * Each 60-second cycle consists of 35 seconds
-     * in sunlight followed by 25 seconds in eclipse.
+     * Returns sunlight or eclipse for the current
+     * simulation second.
      */
     fun exposureAt(second: Int): SolarExposure {
 
@@ -62,12 +56,10 @@ object SatellitePowerSystem {
     }
 
     /**
-     * Calculates the power operating mode.
+     * Determines the satellite's power operating mode.
      *
-     * A satellite recovering from an OFFLINE state
-     * remains offline until battery charge reaches 10%.
-     * This avoids immediately restoring communications
-     * after a negligible amount of charging.
+     * Once depleted, the satellite remains offline
+     * until battery charge reaches 10 percent.
      */
     fun modeFor(
         batteryPercent: Double,
@@ -95,17 +87,18 @@ object SatellitePowerSystem {
     }
 
     /**
-     * Generates a power snapshot without advancing
-     * the battery charge.
+     * Evaluates power conditions without advancing
+     * the simulation clock or battery charge.
      *
-     * This is used at initialization and when the
-     * selected simulated fault changes.
+     * Used when equipment or fault states change.
      */
     fun current(
         batteryPercent: Double,
         previousMode: PowerMode,
         second: Int,
-        fault: SatelliteFault
+        fault: SatelliteFault,
+        equipmentDamage: EquipmentDamage =
+            EquipmentDamage.NONE
     ): PowerSnapshot {
 
         val mode = modeFor(
@@ -116,49 +109,57 @@ object SatellitePowerSystem {
         val exposure = exposureAt(second)
 
         return PowerSnapshot(
-            batteryPercent = batteryPercent.coerceIn(0.0, 100.0),
+            batteryPercent =
+                batteryPercent.coerceIn(0.0, 100.0),
             exposure = exposure,
-            generationWatts = generationFor(exposure),
-            consumptionWatts = consumptionFor(mode, fault),
+            generationWatts = generationFor(
+                exposure = exposure,
+                equipmentDamage = equipmentDamage
+            ),
+            consumptionWatts = consumptionFor(
+                mode = mode,
+                fault = fault
+            ),
             mode = mode
         )
     }
 
     /**
-     * Advances the battery model by one simulation second.
+     * Advances the electrical power simulation
+     * by one second.
      *
-     * Positive net power charges the battery.
-     * Negative net power discharges the battery.
-     *
-     * A power drain fault introduces a large additional
-     * electrical load for testing failure scenarios.
+     * Battery charge changes according to generated
+     * power minus electrical consumption.
      */
     fun advance(
         previousBatteryPercent: Double,
         previousMode: PowerMode,
         second: Int,
-        fault: SatelliteFault
+        fault: SatelliteFault,
+        equipmentDamage: EquipmentDamage =
+            EquipmentDamage.NONE
     ): PowerSnapshot {
 
         val exposure = exposureAt(second)
 
-        val generation = generationFor(exposure)
-
-        val consumption = consumptionFor(
-            previousMode,
-            fault
+        val generation = generationFor(
+            exposure = exposure,
+            equipmentDamage = equipmentDamage
         )
 
-        val powerBalance = generation - consumption
+        val consumption = consumptionFor(
+            mode = previousMode,
+            fault = fault
+        )
 
         val battery = (
                 previousBatteryPercent +
-                        powerBalance * CHARGE_FACTOR
+                        (generation - consumption) * CHARGE_FACTOR
                 ).coerceIn(0.0, 100.0)
 
         val nextMode = modeFor(
-            battery,
-            previousMode
+            batteryPercent = battery,
+            previousMode = previousMode
         )
 
         return PowerSnapshot(
@@ -171,34 +172,47 @@ object SatellitePowerSystem {
     }
 
     /**
-     * Returns solar electrical generation for
-     * the current illumination condition.
+     * Determines available solar power.
+     *
+     * Damaged solar arrays produce ten percent
+     * of nominal solar generation.
      */
     private fun generationFor(
-        exposure: SolarExposure
+        exposure: SolarExposure,
+        equipmentDamage: EquipmentDamage
     ): Double {
 
-        return if (exposure == SolarExposure.SUNLIGHT) {
-            SOLAR_GENERATION_WATTS
+        if (exposure == SolarExposure.ECLIPSE) {
+            return 0.0
+        }
+
+        return if (
+            equipmentDamage ==
+            EquipmentDamage.SOLAR_ARRAY_DAMAGE
+        ) {
+
+            SOLAR_GENERATION_WATTS *
+                    DAMAGED_ARRAY_EFFICIENCY
+
         } else {
-            0.0
+
+            SOLAR_GENERATION_WATTS
         }
     }
 
     /**
-     * Calculates the electrical load associated
-     * with a spacecraft's operating mode.
+     * Calculates the load associated with the
+     * current power mode and temporary faults.
      *
-     * Safe and offline modes reduce normal system
-     * consumption, while a power drain fault adds
-     * a simulated abnormal load.
+     * Nonessential systems consume less power
+     * in safe mode and offline conditions.
      */
     private fun consumptionFor(
         mode: PowerMode,
         fault: SatelliteFault
     ): Double {
 
-        val normalConsumption = when (mode) {
+        val baseConsumption = when (mode) {
 
             PowerMode.NORMAL -> 70.0
 
@@ -209,14 +223,13 @@ object SatellitePowerSystem {
             PowerMode.OFFLINE -> 2.0
         }
 
-        val additionalConsumption =
+        val faultConsumption =
             if (fault == SatelliteFault.POWER_DRAIN) {
                 650.0
             } else {
                 0.0
             }
 
-        return normalConsumption + additionalConsumption
+        return baseConsumption + faultConsumption
     }
 }
-

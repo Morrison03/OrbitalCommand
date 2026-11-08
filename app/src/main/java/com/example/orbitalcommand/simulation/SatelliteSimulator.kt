@@ -1,6 +1,7 @@
 
 package com.example.orbitalcommand.simulation
 
+import com.example.orbitalcommand.model.EquipmentDamage
 import com.example.orbitalcommand.model.PowerMode
 import com.example.orbitalcommand.model.SatelliteCatalog
 import com.example.orbitalcommand.model.SatelliteDefinition
@@ -12,19 +13,18 @@ import kotlin.math.sin
 /**
  * Generates deterministic telemetry for simulated satellites.
  *
- * Orbital movement and temperatures are simplified.
- * The electrical power model is delegated to
- * SatellitePowerSystem.
+ * Combines simplified orbital measurements, thermal behavior,
+ * and the electrical power model into telemetry packets.
  *
- * The simulator does not model physical orbital mechanics.
+ * Persistent equipment damage remains active until the
+ * owning satellite's state is explicitly repaired.
  */
 object SatelliteSimulator {
 
     /**
-     * Creates nominal telemetry for the primary satellite.
+     * Generates nominal telemetry for the primary satellite.
      *
-     * This overload maintains compatibility with
-     * existing simulator unit tests.
+     * Preserves compatibility with existing unit tests.
      */
     fun snapshot(second: Int): SatelliteTelemetry {
 
@@ -35,19 +35,20 @@ object SatelliteSimulator {
     }
 
     /**
-     * Calculates the simulated telemetry for a given time.
+     * Calculates satellite telemetry at a requested
+     * simulation second.
      *
-     * This function starts from the satellite's initial
-     * state and advances through the requested interval.
-     *
-     * The live ViewModel uses advance() instead to avoid
-     * repeatedly recalculating earlier simulation steps.
+     * This method replays earlier simulation steps.
+     * The live ViewModel uses advance() for efficiency.
      */
     fun snapshot(
         second: Int,
         satellite: SatelliteDefinition,
         fault: SatelliteFault = SatelliteFault.NONE,
-        faultStartedSecond: Int? = null
+        faultStartedSecond: Int? = null,
+        equipmentDamage: EquipmentDamage =
+            EquipmentDamage.NONE,
+        equipmentDamageStartedSecond: Int? = null
     ): SatelliteTelemetry {
 
         require(second >= 0) {
@@ -68,12 +69,25 @@ object SatelliteSimulator {
                 SatelliteFault.NONE
             }
 
+            val activeDamage = if (
+                equipmentDamage == EquipmentDamage.NONE ||
+                equipmentDamageStartedSecond == null ||
+                tick >= equipmentDamageStartedSecond
+            ) {
+                equipmentDamage
+            } else {
+                EquipmentDamage.NONE
+            }
+
             telemetry = advance(
                 previous = telemetry,
                 second = tick,
                 satellite = satellite,
                 fault = activeFault,
-                faultStartedSecond = faultStartedSecond
+                faultStartedSecond = faultStartedSecond,
+                equipmentDamage = activeDamage,
+                equipmentDamageStartedSecond =
+                    equipmentDamageStartedSecond
             )
         }
 
@@ -81,14 +95,15 @@ object SatelliteSimulator {
     }
 
     /**
-     * Generates the initial packet for a satellite.
+     * Creates the satellite's initial telemetry packet.
      */
     fun initialTelemetry(
         satellite: SatelliteDefinition
     ): SatelliteTelemetry {
 
         val power = SatellitePowerSystem.current(
-            batteryPercent = satellite.initialBatteryPercent,
+            batteryPercent =
+                satellite.initialBatteryPercent,
             previousMode = PowerMode.NORMAL,
             second = 0,
             fault = SatelliteFault.NONE
@@ -99,22 +114,28 @@ object SatelliteSimulator {
             satellite = satellite,
             power = power,
             fault = SatelliteFault.NONE,
-            faultStartedSecond = null
+            faultStartedSecond = null,
+            equipmentDamage = EquipmentDamage.NONE,
+            equipmentDamageStartedSecond = null
         )
     }
 
     /**
-     * Advances a satellite by exactly one simulation second.
+     * Advances satellite telemetry by exactly
+     * one simulation second.
      *
-     * Battery charge is calculated from the previous
-     * packet rather than from a fixed time-based formula.
+     * Persistent equipment damage is included in
+     * each power and thermal calculation.
      */
     fun advance(
         previous: SatelliteTelemetry,
         second: Int,
         satellite: SatelliteDefinition,
         fault: SatelliteFault = SatelliteFault.NONE,
-        faultStartedSecond: Int? = null
+        faultStartedSecond: Int? = null,
+        equipmentDamage: EquipmentDamage =
+            EquipmentDamage.NONE,
+        equipmentDamageStartedSecond: Int? = null
     ): SatelliteTelemetry {
 
         require(second == previous.sampleSecond + 1) {
@@ -122,10 +143,12 @@ object SatelliteSimulator {
         }
 
         val power = SatellitePowerSystem.advance(
-            previousBatteryPercent = previous.batteryPercent,
+            previousBatteryPercent =
+                previous.batteryPercent,
             previousMode = previous.powerMode,
             second = second,
-            fault = fault
+            fault = fault,
+            equipmentDamage = equipmentDamage
         )
 
         return createTelemetry(
@@ -133,28 +156,36 @@ object SatelliteSimulator {
             satellite = satellite,
             power = power,
             fault = fault,
-            faultStartedSecond = faultStartedSecond
+            faultStartedSecond = faultStartedSecond,
+            equipmentDamage = equipmentDamage,
+            equipmentDamageStartedSecond =
+                equipmentDamageStartedSecond
         )
     }
 
     /**
-     * Recalculates instantaneous telemetry after a fault
-     * changes without advancing simulation time.
+     * Recalculates instantaneous telemetry when
+     * fault or equipment status changes.
      *
-     * Existing battery charge is preserved.
+     * Battery charge and simulation time remain
+     * unchanged during this operation.
      */
     fun refresh(
         previous: SatelliteTelemetry,
         satellite: SatelliteDefinition,
         fault: SatelliteFault,
-        faultStartedSecond: Int?
+        faultStartedSecond: Int?,
+        equipmentDamage: EquipmentDamage =
+            EquipmentDamage.NONE,
+        equipmentDamageStartedSecond: Int? = null
     ): SatelliteTelemetry {
 
         val power = SatellitePowerSystem.current(
             batteryPercent = previous.batteryPercent,
             previousMode = previous.powerMode,
             second = previous.sampleSecond,
-            fault = fault
+            fault = fault,
+            equipmentDamage = equipmentDamage
         )
 
         return createTelemetry(
@@ -162,20 +193,25 @@ object SatelliteSimulator {
             satellite = satellite,
             power = power,
             fault = fault,
-            faultStartedSecond = faultStartedSecond
+            faultStartedSecond = faultStartedSecond,
+            equipmentDamage = equipmentDamage,
+            equipmentDamageStartedSecond =
+                equipmentDamageStartedSecond
         )
     }
 
     /**
-     * Combines orbital, thermal, and electrical
-     * measurements into one telemetry packet.
+     * Combines satellite motion, thermal measurements,
+     * and power data into one telemetry packet.
      */
     private fun createTelemetry(
         second: Int,
         satellite: SatelliteDefinition,
         power: PowerSnapshot,
         fault: SatelliteFault,
-        faultStartedSecond: Int?
+        faultStartedSecond: Int?,
+        equipmentDamage: EquipmentDamage,
+        equipmentDamageStartedSecond: Int?
     ): SatelliteTelemetry {
 
         val altitude =
@@ -191,11 +227,26 @@ object SatelliteSimulator {
 
         if (fault == SatelliteFault.THERMAL_OVERLOAD) {
 
-            val faultDuration = (
+            val duration = (
                     second - (faultStartedSecond ?: second)
                     ).coerceAtLeast(0)
 
-            temperature += faultDuration * 0.75
+            temperature += duration * 0.75
+        }
+
+        if (
+            equipmentDamage ==
+            EquipmentDamage.THERMAL_RADIATOR_DAMAGE
+        ) {
+
+            val damageDuration = (
+                    second -
+                            (equipmentDamageStartedSecond ?: second)
+                    ).coerceAtLeast(0)
+
+            temperature += (
+                    damageDuration * 0.10
+                    ).coerceAtMost(65.0)
         }
 
         temperature = temperature.coerceAtMost(95.0)
@@ -216,8 +267,10 @@ object SatelliteSimulator {
             temperatureC = temperature,
             orbitAngleDegrees = orbitalAngle,
             solarExposure = power.exposure,
-            solarGenerationWatts = power.generationWatts,
-            powerConsumptionWatts = power.consumptionWatts,
+            solarGenerationWatts =
+                power.generationWatts,
+            powerConsumptionWatts =
+                power.consumptionWatts,
             powerMode = power.mode
         )
     }
