@@ -153,7 +153,7 @@ fun Satellite3DScene(
                     currentCameraCallback(
                         currentCamera.rotated(
                             deltaYaw = drag.x * 0.30f,
-                            deltaPitch = drag.y * 0.30f
+                            deltaPitch = -drag.y * 0.30f
                         )
                     )
                 }
@@ -374,37 +374,50 @@ private fun DrawScope.renderServiceScene(
 
     val boxes = mutableListOf<ModelBox>()
 
-    // Structural booms, solar wings, and cells.
+    // Two individually serviceable photovoltaic wings with distinct A/B damage.
     for (side in listOf(-1f, 1f)) {
+        val wing = if (side < 0f) RepairHotspot.SOLAR_PANEL_A
+            else RepairHotspot.SOLAR_PANEL_B
+        val faulted = session.damage == com.example.orbitalcommand.model.EquipmentDamage.SOLAR_ARRAY_DAMAGE &&
+            session.faultySolarPanel == wing
+        val removed = faulted && session.partCondition == RepairPartCondition.REMOVED
+        val damaged = faulted && session.partCondition == RepairPartCondition.DAMAGED &&
+            wing in session.scannedSolarPanels
+        val replacement = faulted && session.partCondition == RepairPartCondition.REPLACED
 
+        // The hinge and mounting boom remain if the array is removed.
         boxes += ModelBox(
-            SatellitePoint3D(side * 0.87f, 0f, -0.10f),
-            0.28f, 0.045f, 0.055f,
-            Color(0xFF64748B)
+            SatellitePoint3D(side * .87f, 0f, -.10f),
+            .28f, .045f, .055f, Color(0xFF64748B)
         )
 
-        boxes += ModelBox(
-            SatellitePoint3D(side * 1.36f, 0f, -0.08f),
-            0.55f, 0.52f, 0.055f,
-            Color(0xFF1E40AF)
-        )
-
-        for (i in -1..1) {
-            for (j in -1..1) {
-
-                boxes += ModelBox(
-                    SatellitePoint3D(
-                        side * 1.36f + i * 0.32f,
-                        j * 0.315f,
-                        -0.012f
-                    ),
-                    0.14f, 0.14f, 0.009f,
-                    if ((i + j) % 2 == 0)
-                        Color(0xFF2563EB)
-                    else
-                        Color(0xFF0EA5E9)
-                )
+        if (!removed) {
+            boxes += ModelBox(
+                SatellitePoint3D(side * 1.36f, 0f, -.08f),
+                .55f, .52f, .055f,
+                if (damaged) Color(0xFF9A633C) else Color(0xFF1E40AF)
+            )
+            for (i in -1..1) {
+                for (j in -1..1) {
+                    val defect = damaged && ((i == 0 && j == 0) || (i == 1 && j == -1))
+                    boxes += ModelBox(
+                        SatellitePoint3D(side * 1.36f + i * .32f, j * .315f, -.012f),
+                        .14f, .14f, .009f,
+                        when {
+                            defect -> Color(0xFFEF4444)
+                            replacement -> Color(0xFF60A5FA)
+                            (i + j) % 2 == 0 -> Color(0xFF2563EB)
+                            else -> Color(0xFF0EA5E9)
+                        }
+                    )
+                }
             }
+        } else {
+            // A visible socket remains after the old wing is detached.
+            boxes += ModelBox(
+                SatellitePoint3D(side * 1.08f, 0f, .02f),
+                .12f, .12f, .11f, Color(0xFFF59E0B)
+            )
         }
     }
 
@@ -457,85 +470,71 @@ private fun DrawScope.renderServiceScene(
         }
     }
 
-    // Opening the cover exposes the electronics tray.
-    if (panelProgress > 0.005f) {
-
+    // Interior layout: independent payload sensor (left) and thermal
+    // controller / heat-pipe module (right). Only the diagnosed part changes.
+    if (panelProgress > .005f) {
         boxes += ModelBox(
-            SatellitePoint3D(0f, 0f, 0.33f),
-            0.52f, 0.64f, 0.025f,
-            Color(0xFF0F172A).copy(
-                alpha = panelProgress
+            SatellitePoint3D(0f, 0f, .33f), .52f, .64f, .025f,
+            Color(0xFF0F172A).copy(alpha = panelProgress)
+        )
+        boxes += ModelBox(
+            SatellitePoint3D(0f, 0f, .36f), .43f, .52f, .025f,
+            Color(0xFF334155).copy(alpha = panelProgress)
+        )
+
+        for (module in listOf(RepairHotspot.PAYLOAD_SENSOR, RepairHotspot.THERMAL_CONTROLLER)) {
+            val target = session.target == module
+            val condition = if (target) session.partCondition else RepairPartCondition.REPAIRED
+            val socket = Satellite3DGeometry.hotspotPosition(module, session)
+            val discard = SatellitePoint3D(
+                if (module == RepairHotspot.PAYLOAD_SENSOR) -1.07f else 1.07f,
+                .69f, .71f
             )
-        )
-
-        boxes += ModelBox(
-            SatellitePoint3D(0f, 0f, 0.36f),
-            0.38f, 0.47f, 0.025f,
-            Color(0xFF334155).copy(
-                alpha = panelProgress
+            val supply = SatellitePoint3D(
+                if (module == RepairHotspot.PAYLOAD_SENSOR) -1.05f else 1.05f,
+                -.67f, .72f
             )
-        )
-
-        val socket = SatellitePoint3D(
-            0f, 0f, 0.46f
-        )
-
-        val discard = SatellitePoint3D(
-            1.12f, 0.74f, 0.67f
-        )
-
-        val supply = SatellitePoint3D(
-            -1.12f, 0.72f, 0.67f
-        )
-
-        // An in-place repair changes the existing
-        // component from damaged red to healthy green.
-        val oldPartColor = Color(
-            red = 0.94f * (1f - repairProgress) +
-                    0.18f * repairProgress,
-            green = 0.20f * (1f - repairProgress) +
-                    0.84f * repairProgress,
-            blue = 0.27f * (1f - repairProgress) +
-                    0.45f * repairProgress,
-            alpha = panelProgress
-        )
-
-        // A removed damaged module moves out
-        // and remains in the discard area.
-        boxes += ModelBox(
-            center = lerpPoint(
-                socket,
-                discard,
-                damagedExtraction
-            ),
-            halfX = 0.29f,
-            halfY = 0.34f,
-            halfZ = 0.11f,
-            color = oldPartColor
-        )
-
-        if (
-            session.partCondition ==
-            RepairPartCondition.REMOVED ||
-            session.partCondition ==
-            RepairPartCondition.REPLACED
-        ) {
-
-            // A healthy replacement moves from
-            // the supply area into the empty socket.
+            val original = when {
+                condition == RepairPartCondition.DAMAGED && session.inspectedInternalModule -> Color(0xFFEF4444)
+                module == RepairHotspot.PAYLOAD_SENSOR -> Color(0xFF22D3EE)
+                else -> Color(0xFFFBBF24)
+            }
+            val currentPosition = if (target) lerpPoint(socket, discard, damagedExtraction) else socket
+            val partAlpha = if (target && condition == RepairPartCondition.REPLACED) 0.55f else 1f
             boxes += ModelBox(
-                center = lerpPoint(
-                    supply,
-                    socket,
-                    replacementInsertion
-                ),
-                halfX = 0.29f,
-                halfY = 0.34f,
-                halfZ = 0.11f,
-                color = Color(0xFF4ADE80).copy(
-                    alpha = panelProgress
-                )
+                center = currentPosition,
+                halfX = .172f, halfY = .27f, halfZ = .085f,
+                color = original.copy(alpha = panelProgress * partAlpha)
             )
+            if (target && (condition == RepairPartCondition.REMOVED ||
+                        condition == RepairPartCondition.REPLACED)) {
+                boxes += ModelBox(
+                    center = lerpPoint(supply, socket, replacementInsertion),
+                    halfX = .172f, halfY = .27f, halfZ = .085f,
+                    color = (if (module == RepairHotspot.PAYLOAD_SENSOR) Color(0xFF22D3EE)
+                             else Color(0xFFFBBF24)).copy(alpha = panelProgress)
+                )
+            }
+            // Different front-face detailing suggests a sensor aperture versus
+            // a finned thermal controller instead of two identical blocks.
+            if (condition != RepairPartCondition.REMOVED &&
+                !(target && condition == RepairPartCondition.REPLACED)) {
+                if (module == RepairHotspot.PAYLOAD_SENSOR) {
+                    boxes += ModelBox(
+                        center = socket.copy(z = socket.z + .09f),
+                        halfX = .09f, halfY = .10f, halfZ = .015f,
+                        color = Color(0xFF082F49).copy(alpha = panelProgress)
+                    )
+                } else {
+                    for (offset in listOf(-.15f, -.05f, .05f, .15f)) {
+                        boxes += ModelBox(
+                            center = socket.copy(y = socket.y + offset, z = socket.z + .095f),
+                            halfX = .13f, halfY = .015f, halfZ = .02f,
+                            color = Color(0xFF94A3B8).copy(alpha = panelProgress)
+                        )
+                    }
+                }
+            }
         }
     }
 
@@ -580,6 +579,10 @@ private fun DrawScope.renderServiceScene(
                 style = Stroke(width = 0.8f)
             )
         }
+
+    // A curved high-gain dish, modeled as a tilted parabolic reflector.
+    // Its condition changes independently of temporary radio-link faults.
+    drawCommunicationsDish(camera, session)
 
     // Screw mounts remain in place while individual
     // screws animate out and back in.
@@ -719,5 +722,60 @@ private fun DrawScope.renderServiceScene(
             center = targetCenter,
             style = Stroke(width = 2f)
         )
+    }
+}
+
+/**
+ * Draws a shallow parabolic communications reflector with an illuminated
+ * mounting ring, feed horn, and damaged/repaired appearance. The geometry
+ * is projected with the same operator camera as the rest of the satellite.
+ */
+private fun DrawScope.drawCommunicationsDish(
+    camera: SatelliteCamera,
+    session: RoboticRepairSession
+) {
+    val dishJob = session.damage ==
+        com.example.orbitalcommand.model.EquipmentDamage.COMMUNICATIONS_DISH_DAMAGE
+    val removed = dishJob && session.partCondition == RepairPartCondition.REMOVED
+    val damaged = dishJob && session.inspectedDish &&
+        session.partCondition == RepairPartCondition.DAMAGED
+    val reflector = if (damaged) Color(0xFFB45309) else Color(0xFFCBD5E1)
+    // Canvas Y grows downward. Negative Y is physically dorsal/top in
+    // the interactive satellite; its POV equivalent has positive Y.
+    val mount = Satellite3DGeometry.project(SatellitePoint3D(0f, -.88f, .10f), camera)
+    val hub = Satellite3DGeometry.project(SatellitePoint3D(0f, -1.26f, .18f), camera)
+    drawLine(Color(0xFF94A3B8), Offset(mount.x, mount.y),
+        Offset(hub.x, hub.y), strokeWidth = 4f)
+
+    if (!removed) {
+        val rim = (0..28).map { i ->
+            val angle = i * kotlin.math.PI * 2.0 / 28.0
+            val x = .36f * kotlin.math.cos(angle).toFloat()
+            val z = .18f + .30f * kotlin.math.sin(angle).toFloat()
+            val y = -1.40f + .10f * kotlin.math.sin(angle).toFloat()
+            Satellite3DGeometry.project(SatellitePoint3D(x, y, z), camera)
+        }
+        for (i in 0 until rim.size - 1) {
+            val path = Path().apply {
+                moveTo(hub.x, hub.y)
+                lineTo(rim[i].x, rim[i].y)
+                lineTo(rim[i + 1].x, rim[i + 1].y)
+                close()
+            }
+            drawPath(path, reflector.copy(alpha = if (i % 2 == 0) .85f else .65f))
+        }
+        for (i in 0 until rim.size - 1) {
+            drawLine(
+                color = if (damaged && i in 2..6) Color(0xFFF87171) else Color(0xFFE2E8F0),
+                start = Offset(rim[i].x, rim[i].y),
+                end = Offset(rim[i+1].x, rim[i+1].y), strokeWidth = 2f
+            )
+        }
+        val tip = Satellite3DGeometry.project(SatellitePoint3D(0f, -1.57f, .18f), camera)
+        drawLine(Color(0xFF64748B), Offset(hub.x, hub.y), Offset(tip.x, tip.y), 2f)
+        drawCircle(Color(0xFF38BDF8), radius = 4f, center = Offset(tip.x, tip.y))
+    } else {
+        drawCircle(Color(0xFFFBBF24), radius = 7f,
+            center = Offset(hub.x, hub.y), style = Stroke(width = 2f))
     }
 }

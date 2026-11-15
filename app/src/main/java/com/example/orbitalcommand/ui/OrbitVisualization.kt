@@ -1,4 +1,3 @@
-
 package com.example.orbitalcommand.ui
 
 import androidx.compose.foundation.Canvas
@@ -7,6 +6,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -16,6 +17,7 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.dp
 import com.example.orbitalcommand.model.OrbitalDisplayGeometry
+import com.example.orbitalcommand.model.ServicerAttachmentRegistry
 import com.example.orbitalcommand.model.SatelliteState
 import com.example.orbitalcommand.model.ServicingStation
 import com.example.orbitalcommand.model.ServicingVehiclePhase
@@ -49,6 +51,25 @@ fun OrbitVisualization(
 
     val stationColor = Color(0xFF4ADE80)
     val vehicleColor = Color(0xFF22D3EE)
+
+    // Observe the same rail-grip status used by navigation.
+    // A communication fault does not erase an active grip.
+    val attachment by ServicerAttachmentRegistry.current.collectAsState()
+
+    val railGripped =
+        attachment?.isRailGripped == true &&
+            attachment?.satelliteId == servicingVehicle.targetSatelliteId &&
+            attachment?.workOrderId == servicingVehicle.workOrderId &&
+            servicingVehicle.phase != ServicingVehiclePhase.RETURNING &&
+            servicingVehicle.phase != ServicingVehiclePhase.DOCKED
+
+    val attachedTarget = if (railGripped) {
+        satellites.firstOrNull {
+            it.definition.id == attachment?.satelliteId
+        }
+    } else {
+        null
+    }
 
     Canvas(
         modifier = Modifier
@@ -183,6 +204,28 @@ fun OrbitVisualization(
             val y = origin.y + orbital.y * scale
 
             val point = Offset(x, y)
+
+            // Its telemetry angle intentionally does not change
+            // during a simulated communication outage.
+            // Do not substitute onboardTelemetry for this marker.
+            if (
+                railGripped &&
+                attachedTarget?.definition?.id ==
+                    satellite.definition.id &&
+                !satellite.isConnected
+            ) {
+                drawCircle(
+                    color = OrbitalColors.Warning.copy(alpha = 0.85f),
+                    radius = 21.dp.toPx(),
+                    center = point,
+                    style = Stroke(
+                        width = 2.dp.toPx(),
+                        pathEffect = PathEffect.dashPathEffect(
+                            floatArrayOf(5.dp.toPx(), 4.dp.toPx())
+                        )
+                    )
+                )
+            }
 
             if (selected) {
 
@@ -356,11 +399,17 @@ fun OrbitVisualization(
 
             val vehiclePoint = Offset(vx, vy)
 
-            // Show a schematic formation relationship
-            // only while tracking current target telemetry.
+            // An attached servicer always uses its CURRENT
+            // predicted onboard orbital position, supplied by
+            // ServicingVehicleNavigation. The satellite marker
+            // remains at its LAST RECEIVED position on link loss.
+            // Draw a connection only while both icons show the
+            // same current observation; a tether to a frozen
+            // ground-control marker would be misleading.
             if (
                 servicingVehicle.phase ==
-                ServicingVehiclePhase.FORMATION_FOLLOWING
+                    ServicingVehiclePhase.FORMATION_FOLLOWING ||
+                railGripped
             ) {
 
                 val target = satellites.firstOrNull {
@@ -391,14 +440,28 @@ fun OrbitVisualization(
                         start = vehiclePoint,
                         end = targetPoint,
                         strokeWidth = 1.5.dp.toPx(),
-                        pathEffect = PathEffect.dashPathEffect(
-                            floatArrayOf(
-                                4.dp.toPx(),
-                                4.dp.toPx()
+                        pathEffect = if (railGripped)
+                            null
+                        else
+                            PathEffect.dashPathEffect(
+                                floatArrayOf(
+                                    4.dp.toPx(),
+                                    4.dp.toPx()
+                                )
                             )
-                        )
                     )
                 }
+            }
+
+            // An extra ring identifies a physically attached
+            // servicer even while guidance is in HOLDING.
+            if (railGripped) {
+                drawCircle(
+                    color = vehicleColor.copy(alpha = 0.9f),
+                    radius = 19.dp.toPx(),
+                    center = vehiclePoint,
+                    style = Stroke(width = 1.5.dp.toPx())
+                )
             }
 
             // Highlight the robot's current position.

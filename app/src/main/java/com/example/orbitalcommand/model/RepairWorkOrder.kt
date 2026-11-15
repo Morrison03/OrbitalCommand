@@ -25,9 +25,17 @@ enum class EquipmentDamage(
     SOLAR_ARRAY_DAMAGE(
         "Solar Array Damage",
         "Electrical Power",
-        "Replace solar array",
+        "Diagnose and repair or replace faulty solar wing",
         "Damaged solar panels generate significantly " +
                 "less electricity during sunlight."
+    ),
+
+    COMMUNICATIONS_DISH_DAMAGE(
+        "Communications Dish Damage",
+        "Radio Communications",
+        "Inspect and realign or replace high-gain antenna",
+        "The high-gain dish or feed assembly has a persistent mechanical fault. " +
+                "This is separate from a temporary communication-loss test fault."
     ),
 
     THERMAL_RADIATOR_DAMAGE(

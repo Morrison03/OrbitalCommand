@@ -43,6 +43,7 @@ android {
 }
 
 dependencies {
+    implementation("com.google.code.gson:gson:2.15.0")
     implementation(libs.androidx.core.ktx)
 
     // Lifecycle management and observable UI state.
@@ -59,6 +60,9 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
+
+    // 3D satellite rendering using SceneView and Filament.
+    implementation("io.github.sceneview:sceneview:2.3.0")
 
     // Unit and Android instrumentation tests.
     testImplementation(libs.junit)

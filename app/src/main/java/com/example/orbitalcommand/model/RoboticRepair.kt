@@ -1,7 +1,6 @@
-
 package com.example.orbitalcommand.model
 
-/** Operator-selected tool used in the satellite service view. */
+/** Tool currently held by SERVICER-01's free manipulator. */
 enum class RepairTool(val displayName: String) {
     NONE("No tool"),
     SCREWDRIVER("Precision screwdriver"),
@@ -12,127 +11,98 @@ enum class RepairTool(val displayName: String) {
     INSTALLER("Replacement installer")
 }
 
-/** The current physical interaction required by the repair procedure. */
-enum class RepairProcedureStep(
-    val displayName: String,
-    val instruction: String
-) {
-    UNSCREW(
-        "Remove fasteners",
-        "Select the screwdriver, then tap all four panel screws."
-    ),
-    LIFT_PANEL(
-        "Lift access panel",
-        "Select the gripper, then tap the service panel to lift it."
-    ),
-    EXAMINE(
-        "Examine damaged component",
-        "Select the scanner, then tap the exposed damaged component."
-    ),
-    CHOOSE_METHOD(
-        "Choose service method",
-        "Choose in-place repair or removal and replacement."
-    ),
-    REMOVE_PART(
-        "Dismantle damaged part",
-        "Select the extractor, then tap the damaged component."
-    ),
-    INSTALL_REPLACEMENT(
-        "Install replacement",
-        "Select the installer, then tap the empty component socket."
-    ),
-    REPAIR_IN_PLACE(
-        "Repair existing part",
-        "Select the repair kit, then tap the damaged component."
-    ),
-    CLOSE_PANEL(
-        "Close access panel",
-        "Select the gripper, then tap the lifted panel to close it."
-    ),
-    SECURE_SCREWS(
-        "Secure fasteners",
-        "Select the screwdriver, then tap all four screws to tighten them."
-    ),
-    VERIFY(
-        "Verify repair",
-        "Select the scanner, then tap the diagnostic port to run the final check."
-    ),
-    COMPLETE(
-        "Repair complete",
-        "The repair passed its simulated verification procedure."
-    )
+/** Ordered, component-specific servicing actions. */
+enum class RepairProcedureStep(val displayName: String, val instruction: String) {
+    SCAN_SOLAR_PANELS("Diagnose solar arrays", "Scan BOTH solar wings to locate the failed array. Move to Port for Solar A and Starboard for Solar B."),
+    SCAN_DISH("Inspect antenna dish", "Move to Top, select the scanner, and tap the communications dish."),
+    UNSCREW("Remove fasteners", "Move to Service; use the screwdriver on all four access-panel screws."),
+    LIFT_PANEL("Lift access panel", "Use the gripper to lift the service cover."),
+    EXAMINE("Inspect internal module", "Scan the highlighted payload sensor or thermal controller, not the adjacent healthy module."),
+    CHOOSE_METHOD("Choose repair method", "Choose in-place repair or component replacement."),
+    REMOVE_PART("Extract damaged hardware", "Use the extractor on the diagnosed damaged component."),
+    INSTALL_REPLACEMENT("Install replacement", "Use the installer on the empty mount/socket."),
+    REPAIR_IN_PLACE("Repair hardware in place", "Use the repair kit on the diagnosed damaged component."),
+    CLOSE_PANEL("Close service panel", "Use the gripper to close the service cover."),
+    SECURE_SCREWS("Reinstall fasteners", "Use the screwdriver to reinstall all four panel screws."),
+    VERIFY("Run final diagnostics", "Move to Service; scan the diagnostic port to verify the repaired subsystem."),
+    COMPLETE("Repair complete", "The component-specific repair has passed simulated verification.")
 }
 
-/** Available approaches to restoring damaged equipment. */
+/** Operator-selected service strategy. */
 enum class RepairServiceMethod(val displayName: String) {
     REPAIR_IN_PLACE("Repair the existing part"),
     REPLACE_COMPONENT("Remove and install replacement")
 }
 
-/** Current visible condition of the serviceable component. */
-enum class RepairPartCondition {
-    DAMAGED,
-    REMOVED,
-    REPAIRED,
-    REPLACED
-}
+/** Current condition of the component named by the work order. */
+enum class RepairPartCondition { DAMAGED, REMOVED, REPAIRED, REPLACED }
 
-/** Tappable physical components on the satellite model. */
+/** Touchable spacecraft components; original hotspots remain for compatibility. */
 enum class RepairHotspot {
-    SCREW_1,
-    SCREW_2,
-    SCREW_3,
-    SCREW_4,
-    ACCESS_PANEL,
-    COMPONENT,
-    COMPONENT_SOCKET,
-    DIAGNOSTIC_PORT;
+    SCREW_1, SCREW_2, SCREW_3, SCREW_4,
+    ACCESS_PANEL, COMPONENT, COMPONENT_SOCKET, DIAGNOSTIC_PORT,
+    SOLAR_PANEL_A, SOLAR_PANEL_B, SOLAR_MOUNT_A, SOLAR_MOUNT_B,
+    COMMUNICATIONS_DISH, DISH_MOUNT,
+    PAYLOAD_SENSOR, PAYLOAD_SOCKET, THERMAL_CONTROLLER, THERMAL_SOCKET;
 
     val isScrew: Boolean
-        get() = this == SCREW_1 ||
-                this == SCREW_2 ||
-                this == SCREW_3 ||
-                this == SCREW_4
+        get() = this in setOf(SCREW_1, SCREW_2, SCREW_3, SCREW_4)
 }
 
-/**
- * Stores the physical-looking configuration of one
- * satellite's interactive maintenance procedure.
- *
- * Its state persists during temporary telemetry loss.
- */
+/** A deterministic repair session whose progress survives temporary signal loss. */
 data class RoboticRepairSession(
     val workOrderId: Long,
     val satelliteId: String,
     val damage: EquipmentDamage,
-    val step: RepairProcedureStep =
-        RepairProcedureStep.UNSCREW,
+    val step: RepairProcedureStep = RepairProcedureStep.UNSCREW,
     val tool: RepairTool = RepairTool.NONE,
     val loosenedScrews: Set<RepairHotspot> = emptySet(),
     val panelOpen: Boolean = false,
     val method: RepairServiceMethod? = null,
-    val partCondition: RepairPartCondition =
-        RepairPartCondition.DAMAGED,
-    val feedback: String =
-        "Remove the four highlighted access-panel screws."
+    val partCondition: RepairPartCondition = RepairPartCondition.DAMAGED,
+    val feedback: String = "Select the highlighted target to begin servicing.",
+    val faultySolarPanel: RepairHotspot = RepairHotspot.SOLAR_PANEL_A,
+    val scannedSolarPanels: Set<RepairHotspot> = emptySet(),
+    val inspectedDish: Boolean = false,
+    val inspectedInternalModule: Boolean = false
 ) {
+    val isComplete: Boolean get() = step == RepairProcedureStep.COMPLETE
 
-    val isComplete: Boolean
-        get() = step == RepairProcedureStep.COMPLETE
+    val fastenersRemaining: Int get() = when (step) {
+        RepairProcedureStep.UNSCREW -> 4 - loosenedScrews.size
+        RepairProcedureStep.SECURE_SCREWS -> loosenedScrews.size
+        else -> 0
+    }
 
-    val fastenersRemaining: Int
-        get() = when (step) {
-            RepairProcedureStep.UNSCREW ->
-                4 - loosenedScrews.size
+    /** The subsystem physically targeted by this work order. */
+    val target: RepairHotspot get() = when (damage) {
+        EquipmentDamage.SOLAR_ARRAY_DAMAGE -> faultySolarPanel
+        EquipmentDamage.COMMUNICATIONS_DISH_DAMAGE -> RepairHotspot.COMMUNICATIONS_DISH
+        EquipmentDamage.PAYLOAD_SENSOR_DAMAGE -> RepairHotspot.PAYLOAD_SENSOR
+        EquipmentDamage.THERMAL_RADIATOR_DAMAGE -> RepairHotspot.THERMAL_CONTROLLER
+        EquipmentDamage.NONE -> RepairHotspot.COMPONENT
+    }
 
-            RepairProcedureStep.SECURE_SCREWS ->
-                loosenedScrews.size
+    val replacementSocket: RepairHotspot get() = when (target) {
+        RepairHotspot.SOLAR_PANEL_A -> RepairHotspot.SOLAR_MOUNT_A
+        RepairHotspot.SOLAR_PANEL_B -> RepairHotspot.SOLAR_MOUNT_B
+        RepairHotspot.COMMUNICATIONS_DISH -> RepairHotspot.DISH_MOUNT
+        RepairHotspot.PAYLOAD_SENSOR -> RepairHotspot.PAYLOAD_SOCKET
+        RepairHotspot.THERMAL_CONTROLLER -> RepairHotspot.THERMAL_SOCKET
+        else -> RepairHotspot.COMPONENT_SOCKET
+    }
 
-            else -> 0
-        }
+    val isInternalRepair: Boolean get() = damage == EquipmentDamage.PAYLOAD_SENSOR_DAMAGE ||
+        damage == EquipmentDamage.THERMAL_RADIATOR_DAMAGE
+
+    val payloadCondition: RepairPartCondition get() =
+        if (damage == EquipmentDamage.PAYLOAD_SENSOR_DAMAGE) partCondition else RepairPartCondition.REPAIRED
+
+    val thermalCondition: RepairPartCondition get() =
+        if (damage == EquipmentDamage.THERMAL_RADIATOR_DAMAGE) partCondition else RepairPartCondition.REPAIRED
 }
 
-/** Result of an operator interaction with a satellite part. */
+/** Outcome of one operator action. Invalid actions never advance repair state. */
 data class RepairInteractionResult(
     val session: RoboticRepairSession,
     val succeeded: Boolean,
@@ -141,491 +111,241 @@ data class RepairInteractionResult(
 )
 
 /**
- * Defines deterministic satellite servicing rules.
+ * Pure, deterministic work-order state machine.
  *
- * Actions are illustrative maintenance simulations,
- * not real spacecraft repair instructions.
- *
- * The ViewModel separately validates the work order,
- * vehicle formation, and target communications.
+ * Every subsystem has a different entry procedure. Solar arrays require
+ * scanning both wings; the dish requires a separate external inspection;
+ * payload and thermal work require opening the same service bay but touching
+ * different physical modules. Repair success is reported only after VERIFY.
  */
 object RoboticRepairSimulator {
-
     private val screws = setOf(
-        RepairHotspot.SCREW_1,
-        RepairHotspot.SCREW_2,
-        RepairHotspot.SCREW_3,
-        RepairHotspot.SCREW_4
+        RepairHotspot.SCREW_1, RepairHotspot.SCREW_2,
+        RepairHotspot.SCREW_3, RepairHotspot.SCREW_4
     )
+    private val solar = setOf(RepairHotspot.SOLAR_PANEL_A, RepairHotspot.SOLAR_PANEL_B)
 
-    /** Starts a service procedure for a queued work order. */
-    fun start(
-        order: RepairWorkOrder
-    ): RoboticRepairSession {
-
-        require(order.status == RepairStatus.QUEUED) {
-            "The work order must be queued before servicing."
+    /** Starts the work order with the appropriate external/internal sequence. */
+    fun start(order: RepairWorkOrder): RoboticRepairSession {
+        require(order.status == RepairStatus.QUEUED) { "Work order must be queued." }
+        require(order.damage != EquipmentDamage.NONE) { "Damaged hardware is required." }
+        val first = when (order.damage) {
+            EquipmentDamage.SOLAR_ARRAY_DAMAGE -> RepairProcedureStep.SCAN_SOLAR_PANELS
+            EquipmentDamage.COMMUNICATIONS_DISH_DAMAGE -> RepairProcedureStep.SCAN_DISH
+            else -> RepairProcedureStep.UNSCREW
         }
-
-        require(order.damage != EquipmentDamage.NONE) {
-            "A service operation requires damaged equipment."
-        }
-
+        // Stable throughout the work order; opposite satellite/order parity can
+        // change the failure location without randomly changing it after restart.
+        val failed = if ((order.id + order.satelliteId.hashCode().toLong()) % 2L == 0L)
+            RepairHotspot.SOLAR_PANEL_A else RepairHotspot.SOLAR_PANEL_B
         return RoboticRepairSession(
             workOrderId = order.id,
             satelliteId = order.satelliteId,
-            damage = order.damage
+            damage = order.damage,
+            step = first,
+            faultySolarPanel = failed,
+            feedback = first.instruction
         )
     }
 
-    /** Selects a tool without advancing the procedure. */
-    fun selectTool(
-        session: RoboticRepairSession,
-        tool: RepairTool
-    ): RoboticRepairSession {
-
-        if (session.isComplete) {
-            return session
-        }
-
-        return session.copy(
-            tool = tool,
-            feedback =
-                "Selected ${tool.displayName}. " +
-                        session.step.instruction
+    /** Changes tools without executing maintenance. */
+    fun selectTool(session: RoboticRepairSession, tool: RepairTool): RoboticRepairSession =
+        if (session.isComplete) session else session.copy(
+            tool = tool, feedback = "Selected ${tool.displayName}. ${session.step.instruction}"
         )
+
+    /** Human-readable physical part for each equipment damage type. */
+    fun componentLabel(damage: EquipmentDamage): String = when (damage) {
+        EquipmentDamage.SOLAR_ARRAY_DAMAGE -> "Solar wing (diagnose A/B)"
+        EquipmentDamage.COMMUNICATIONS_DISH_DAMAGE -> "High-gain communications dish"
+        EquipmentDamage.THERMAL_RADIATOR_DAMAGE -> "Thermal controller / heat-pipe assembly"
+        EquipmentDamage.PAYLOAD_SENSOR_DAMAGE -> "Payload sensor module"
+        EquipmentDamage.NONE -> "Unspecified component"
     }
 
-    /** Identifies the serviceable component for a fault. */
-    fun componentLabel(
-        damage: EquipmentDamage
-    ): String = when (damage) {
-
-        EquipmentDamage.SOLAR_ARRAY_DAMAGE ->
-            "Solar array power controller"
-
-        EquipmentDamage.THERMAL_RADIATOR_DAMAGE ->
-            "Thermal circulation module"
-
-        EquipmentDamage.PAYLOAD_SENSOR_DAMAGE ->
-            "Payload sensor assembly"
-
-        EquipmentDamage.NONE ->
-            "Unspecified component"
-    }
-
-    /** Returns the required tool for the current action. */
-    fun requiredTool(
-        step: RepairProcedureStep
-    ): RepairTool = when (step) {
-
-        RepairProcedureStep.UNSCREW,
-        RepairProcedureStep.SECURE_SCREWS ->
-            RepairTool.SCREWDRIVER
-
-        RepairProcedureStep.LIFT_PANEL,
-        RepairProcedureStep.CLOSE_PANEL ->
-            RepairTool.GRIPPER
-
+    /** Tool required to perform the current mechanical action. */
+    fun requiredTool(step: RepairProcedureStep): RepairTool = when (step) {
+        RepairProcedureStep.SCAN_SOLAR_PANELS,
+        RepairProcedureStep.SCAN_DISH,
         RepairProcedureStep.EXAMINE,
-        RepairProcedureStep.VERIFY ->
-            RepairTool.SCANNER
-
-        RepairProcedureStep.REMOVE_PART ->
-            RepairTool.EXTRACTOR
-
-        RepairProcedureStep.INSTALL_REPLACEMENT ->
-            RepairTool.INSTALLER
-
-        RepairProcedureStep.REPAIR_IN_PLACE ->
-            RepairTool.REPAIR_KIT
-
+        RepairProcedureStep.VERIFY -> RepairTool.SCANNER
+        RepairProcedureStep.UNSCREW,
+        RepairProcedureStep.SECURE_SCREWS -> RepairTool.SCREWDRIVER
+        RepairProcedureStep.LIFT_PANEL,
+        RepairProcedureStep.CLOSE_PANEL -> RepairTool.GRIPPER
+        RepairProcedureStep.REMOVE_PART -> RepairTool.EXTRACTOR
+        RepairProcedureStep.INSTALL_REPLACEMENT -> RepairTool.INSTALLER
+        RepairProcedureStep.REPAIR_IN_PLACE -> RepairTool.REPAIR_KIT
         RepairProcedureStep.CHOOSE_METHOD,
-        RepairProcedureStep.COMPLETE ->
-            RepairTool.NONE
+        RepairProcedureStep.COMPLETE -> RepairTool.NONE
     }
 
-    /**
-     * Chooses either repair-in-place or removal
-     * and installation of a replacement component.
-     */
-    fun chooseMethod(
-        session: RoboticRepairSession,
-        method: RepairServiceMethod
-    ): RepairInteractionResult {
-
-        if (
-            session.step != RepairProcedureStep.CHOOSE_METHOD
-        ) {
-            return reject(
-                session,
-                "Examine the component before choosing a repair method."
-            )
+    /** Selects a valid repair branch after diagnosis. */
+    fun chooseMethod(session: RoboticRepairSession, method: RepairServiceMethod): RepairInteractionResult {
+        if (session.step != RepairProcedureStep.CHOOSE_METHOD) {
+            return reject(session, "Finish component diagnosis before choosing a method.")
         }
-
-        val next = when (method) {
-
-            RepairServiceMethod.REPAIR_IN_PLACE ->
-                RepairProcedureStep.REPAIR_IN_PLACE
-
-            RepairServiceMethod.REPLACE_COMPONENT ->
-                RepairProcedureStep.REMOVE_PART
-        }
-
-        return accept(
-            before = session,
-            after = session.copy(
-                method = method,
-                step = next
-            ),
-            message =
-                "Method selected: ${method.displayName}. " +
-                        next.instruction
-        )
+        val next = if (method == RepairServiceMethod.REPAIR_IN_PLACE)
+            RepairProcedureStep.REPAIR_IN_PLACE else RepairProcedureStep.REMOVE_PART
+        return accept(session, session.copy(method = method, step = next),
+            "${method.displayName}. ${next.instruction}")
     }
 
-    /**
-     * Processes one physical interaction with the model.
-     *
-     * Invalid actions cannot bypass an earlier task.
-     * The final valid diagnostics action is the only
-     * interaction that produces a completion signal.
-     */
-    fun interact(
-        session: RoboticRepairSession,
-        hotspot: RepairHotspot
-    ): RepairInteractionResult {
-
-        if (session.isComplete) {
-            return reject(
-                session,
-                "This repair is already complete."
-            )
+    /** Applies an interaction to exactly the active subsystem. */
+    fun interact(session: RoboticRepairSession, hotspot: RepairHotspot): RepairInteractionResult {
+        if (session.isComplete) return reject(session, "This repair has already been verified.")
+        if (session.step == RepairProcedureStep.CHOOSE_METHOD) {
+            return reject(session, "Choose Repair or Replace below the model.")
         }
-
-        val required = requiredTool(session.step)
-
-        if (
-            session.step == RepairProcedureStep.CHOOSE_METHOD
-        ) {
-            return reject(
-                session,
-                "Choose Repair or Replace below the satellite model."
-            )
+        if (session.tool != requiredTool(session.step)) {
+            return reject(session, "Select ${requiredTool(session.step).displayName} first.")
         }
-
-        if (session.tool != required) {
-            return reject(
-                session,
-                "Select ${required.displayName} first."
-            )
-        }
-
         return when (session.step) {
-
+            RepairProcedureStep.SCAN_SOLAR_PANELS -> {
+                if (hotspot !in solar) return reject(session, "Scan Solar A or Solar B.")
+                if (hotspot in session.scannedSolarPanels) return reject(session, "That wing has already been scanned; inspect the other wing.")
+                val scanned = session.scannedSolarPanels + hotspot
+                val damaged = hotspot == session.faultySolarPanel
+                val next = if (scanned == solar) RepairProcedureStep.CHOOSE_METHOD
+                    else RepairProcedureStep.SCAN_SOLAR_PANELS
+                accept(session, session.copy(scannedSolarPanels = scanned, step = next),
+                    "${if (hotspot == RepairHotspot.SOLAR_PANEL_A) "Solar A" else "Solar B"}: " +
+                        (if (damaged) "FAULT DETECTED — damaged photovoltaic cells/interconnects." else "PASS — normal output.") +
+                        (if (scanned == solar) " Both wings diagnosed. Choose repair or replacement." else " Scan the other wing."))
+            }
+            RepairProcedureStep.SCAN_DISH -> {
+                if (hotspot != RepairHotspot.COMMUNICATIONS_DISH) return reject(session, "Scan the communications dish.")
+                accept(session, session.copy(inspectedDish = true, step = RepairProcedureStep.CHOOSE_METHOD),
+                    "Antenna feed/mount fault confirmed. Choose realignment repair or dish replacement.")
+            }
             RepairProcedureStep.UNSCREW -> {
-
-                if (!hotspot.isScrew) {
-                    return reject(
-                        session,
-                        "Tap a highlighted panel screw."
-                    )
-                }
-
-                if (hotspot in session.loosenedScrews) {
-                    return reject(
-                        session,
-                        "That screw is already removed."
-                    )
-                }
-
-                val removed =
-                    session.loosenedScrews + hotspot
-
-                val next = if (removed == screws) {
-                    RepairProcedureStep.LIFT_PANEL
-                } else {
-                    RepairProcedureStep.UNSCREW
-                }
-
-                accept(
-                    session,
-                    session.copy(
-                        step = next,
-                        loosenedScrews = removed
-                    ),
-                    if (next == RepairProcedureStep.LIFT_PANEL)
-                        "All four screws removed. Lift the access panel."
-                    else
-                        "Screw removed (${removed.size}/4)."
-                )
+                if (!hotspot.isScrew) return reject(session, "Select a highlighted panel screw.")
+                if (hotspot in session.loosenedScrews) return reject(session, "That screw was already removed.")
+                val removed = session.loosenedScrews + hotspot
+                val next = if (removed == screws) RepairProcedureStep.LIFT_PANEL else session.step
+                accept(session, session.copy(step = next, loosenedScrews = removed),
+                    if (next == RepairProcedureStep.LIFT_PANEL) "All screws removed. Lift the cover."
+                    else "Screw removed (${removed.size}/4).")
             }
-
             RepairProcedureStep.LIFT_PANEL -> {
-
-                if (hotspot != RepairHotspot.ACCESS_PANEL) {
-                    return reject(
-                        session,
-                        "Tap the service panel to lift its cover."
-                    )
-                }
-
-                accept(
-                    session,
-                    session.copy(
-                        step = RepairProcedureStep.EXAMINE,
-                        panelOpen = true
-                    ),
-                    "Panel lifted. The internal component is exposed for inspection."
-                )
+                if (hotspot != RepairHotspot.ACCESS_PANEL) return reject(session, "Lift the access cover.")
+                accept(session, session.copy(panelOpen = true, step = RepairProcedureStep.EXAMINE),
+                    "Service bay open. Scan the highlighted ${componentLabel(session.damage)}.")
             }
-
             RepairProcedureStep.EXAMINE -> {
-
-                if (hotspot != RepairHotspot.COMPONENT) {
-                    return reject(
-                        session,
-                        "Scan the exposed component."
-                    )
-                }
-
-                accept(
-                    session,
-                    session.copy(
-                        step = RepairProcedureStep.CHOOSE_METHOD
-                    ),
-                    "Inspection confirms damage in the " +
-                            "${componentLabel(session.damage)}. " +
-                            "Choose a service method."
-                )
+                if (hotspot != session.target) return reject(session,
+                    "Scan the ${componentLabel(session.damage)}, not the neighboring healthy module.")
+                accept(session, session.copy(inspectedInternalModule = true, step = RepairProcedureStep.CHOOSE_METHOD),
+                    "${componentLabel(session.damage)} fault confirmed; adjacent module passes diagnostics.")
             }
-
             RepairProcedureStep.REMOVE_PART -> {
-
-                if (hotspot != RepairHotspot.COMPONENT) {
-                    return reject(
-                        session,
-                        "Tap the damaged part to dismantle it."
-                    )
-                }
-
-                accept(
-                    session,
-                    session.copy(
-                        step =
-                            RepairProcedureStep.INSTALL_REPLACEMENT,
-                        partCondition = RepairPartCondition.REMOVED
-                    ),
-                    "Damaged part removed. The mounting socket is now empty."
-                )
+                if (hotspot != session.target) return reject(session,
+                    "Extract the diagnosed ${componentLabel(session.damage)}.")
+                accept(session, session.copy(partCondition = RepairPartCondition.REMOVED,
+                    step = RepairProcedureStep.INSTALL_REPLACEMENT),
+                    "Damaged hardware extracted. Install a replacement at the empty mount.")
             }
-
             RepairProcedureStep.INSTALL_REPLACEMENT -> {
-
-                if (
-                    hotspot != RepairHotspot.COMPONENT_SOCKET
-                ) {
-                    return reject(
-                        session,
-                        "Tap the empty mounting socket."
-                    )
+                if (hotspot != session.replacementSocket || session.partCondition != RepairPartCondition.REMOVED) {
+                    return reject(session, "Install replacement into the diagnosed component's empty mount.")
                 }
-
-                if (
-                    session.partCondition !=
-                    RepairPartCondition.REMOVED
-                ) {
-                    return reject(
-                        session,
-                        "Remove the damaged component first."
-                    )
-                }
-
-                accept(
-                    session,
-                    session.copy(
-                        step = RepairProcedureStep.CLOSE_PANEL,
-                        partCondition =
-                            RepairPartCondition.REPLACED
-                    ),
-                    "Replacement installed. Close the access panel."
-                )
+                val next = if (session.isInternalRepair) RepairProcedureStep.CLOSE_PANEL else RepairProcedureStep.VERIFY
+                accept(session, session.copy(partCondition = RepairPartCondition.REPLACED, step = next),
+                    "Replacement secured. ${next.instruction}")
             }
-
             RepairProcedureStep.REPAIR_IN_PLACE -> {
-
-                if (hotspot != RepairHotspot.COMPONENT) {
-                    return reject(
-                        session,
-                        "Tap the damaged part to repair it."
-                    )
-                }
-
-                accept(
-                    session,
-                    session.copy(
-                        step = RepairProcedureStep.CLOSE_PANEL,
-                        partCondition =
-                            RepairPartCondition.REPAIRED
-                    ),
-                    "Component repaired in place. Close the access panel."
-                )
+                if (hotspot != session.target) return reject(session,
+                    "Repair the diagnosed ${componentLabel(session.damage)}, not another component.")
+                val next = if (session.isInternalRepair) RepairProcedureStep.CLOSE_PANEL else RepairProcedureStep.VERIFY
+                accept(session, session.copy(partCondition = RepairPartCondition.REPAIRED, step = next),
+                    "In-place restoration complete. ${next.instruction}")
             }
-
             RepairProcedureStep.CLOSE_PANEL -> {
-
-                if (hotspot != RepairHotspot.ACCESS_PANEL) {
-                    return reject(
-                        session,
-                        "Tap the lifted cover to close the panel."
-                    )
-                }
-
-                if (
-                    session.partCondition ==
-                    RepairPartCondition.DAMAGED ||
-                    session.partCondition ==
-                    RepairPartCondition.REMOVED
-                ) {
-                    return reject(
-                        session,
-                        "Restore the component before closing the panel."
-                    )
-                }
-
-                accept(
-                    session,
-                    session.copy(
-                        step =
-                            RepairProcedureStep.SECURE_SCREWS,
-                        panelOpen = false
-                    ),
-                    "Panel closed. Reinstall all four fasteners."
-                )
+                if (hotspot != RepairHotspot.ACCESS_PANEL) return reject(session, "Close the service cover.")
+                if (!session.isInternalRepair || session.partCondition !in setOf(
+                    RepairPartCondition.REPAIRED, RepairPartCondition.REPLACED
+                )) return reject(session, "Restore the internal module before closing the cover.")
+                accept(session, session.copy(panelOpen = false, step = RepairProcedureStep.SECURE_SCREWS),
+                    "Cover closed. Reinstall the four retaining screws.")
             }
-
             RepairProcedureStep.SECURE_SCREWS -> {
-
-                if (!hotspot.isScrew) {
-                    return reject(
-                        session,
-                        "Tap an empty screw mount to tighten a fastener."
-                    )
+                if (!hotspot.isScrew || hotspot !in session.loosenedScrews) {
+                    return reject(session, "Select a removed panel fastener to reinstall.")
                 }
-
-                if (
-                    hotspot !in session.loosenedScrews
-                ) {
-                    return reject(
-                        session,
-                        "That screw is already secured."
-                    )
-                }
-
-                val remaining =
-                    session.loosenedScrews - hotspot
-
-                val next = if (remaining.isEmpty()) {
-                    RepairProcedureStep.VERIFY
-                } else {
-                    RepairProcedureStep.SECURE_SCREWS
-                }
-
-                accept(
-                    session,
-                    session.copy(
-                        step = next,
-                        loosenedScrews = remaining
-                    ),
-                    if (next == RepairProcedureStep.VERIFY)
-                        "Panel secured. Run final diagnostics."
-                    else
-                        "Screw secured (${4 - remaining.size}/4)."
-                )
+                val remaining = session.loosenedScrews - hotspot
+                val next = if (remaining.isEmpty()) RepairProcedureStep.VERIFY else session.step
+                accept(session, session.copy(loosenedScrews = remaining, step = next),
+                    if (next == RepairProcedureStep.VERIFY) "Cover secured. Run final diagnostics."
+                    else "Screw secured (${4 - remaining.size}/4).")
             }
-
             RepairProcedureStep.VERIFY -> {
-
-                if (
-                    hotspot !=
-                    RepairHotspot.DIAGNOSTIC_PORT
-                ) {
-                    return reject(
-                        session,
-                        "Tap the diagnostic port for final verification."
-                    )
+                if (hotspot != RepairHotspot.DIAGNOSTIC_PORT) {
+                    return reject(session, "Scan the service diagnostic port.")
                 }
-
-                if (
-                    session.panelOpen ||
-                    session.loosenedScrews.isNotEmpty() ||
-                    session.partCondition ==
-                    RepairPartCondition.DAMAGED ||
-                    session.partCondition ==
-                    RepairPartCondition.REMOVED
-                ) {
-                    return reject(
-                        session,
-                        "Panel closure and component restoration must be verified first."
-                    )
-                }
-
-                accept(
-                    session,
-                    session.copy(
-                        step = RepairProcedureStep.COMPLETE
-                    ),
-                    "Diagnostics passed. The simulated repair is complete.",
-                    completed = true
-                )
+                if (session.partCondition !in setOf(RepairPartCondition.REPAIRED, RepairPartCondition.REPLACED) ||
+                    (session.isInternalRepair && (session.panelOpen || session.loosenedScrews.isNotEmpty())) ||
+                    (session.damage == EquipmentDamage.SOLAR_ARRAY_DAMAGE && session.scannedSolarPanels != solar) ||
+                    (session.damage == EquipmentDamage.COMMUNICATIONS_DISH_DAMAGE && !session.inspectedDish) ||
+                    (session.isInternalRepair && !session.inspectedInternalModule)
+                ) return reject(session, "Mechanical closure or subsystem diagnosis is incomplete.")
+                accept(session, session.copy(step = RepairProcedureStep.COMPLETE),
+                    "Diagnostics PASSED: ${componentLabel(session.damage)} restored.", completed = true)
             }
-
-            RepairProcedureStep.CHOOSE_METHOD,
-            RepairProcedureStep.COMPLETE -> {
-                reject(
-                    session,
-                    "This interaction is not available now."
-                )
-            }
+            RepairProcedureStep.CHOOSE_METHOD, RepairProcedureStep.COMPLETE ->
+                reject(session, "No physical interaction is available for this step.")
         }
     }
 
-    /** Rejects an action without advancing the procedure. */
-    private fun reject(
-        session: RoboticRepairSession,
-        message: String
-    ): RepairInteractionResult =
-        RepairInteractionResult(
-            session = session.copy(feedback = message),
-            succeeded = false
-        )
+    private fun reject(session: RoboticRepairSession, reason: String) =
+        RepairInteractionResult(session.copy(feedback = reason), succeeded = false)
 
-    /** Accepts an action and reports whether the task changed. */
-    private fun accept(
-        before: RoboticRepairSession,
-        after: RoboticRepairSession,
-        message: String,
-        completed: Boolean = false
-    ): RepairInteractionResult =
-        RepairInteractionResult(
-            session = after.copy(feedback = message),
-            succeeded = true,
-            completed = completed,
-            stepChanged = before.step != after.step
-        )
+    private fun accept(before: RoboticRepairSession, after: RoboticRepairSession,
+                       message: String, completed: Boolean = false) = RepairInteractionResult(
+        session = after.copy(feedback = message),
+        succeeded = true, completed = completed, stepChanged = before.step != after.step
+    )
 }
 
 /**
- * Shared touch coordinates for the satellite service view.
- *
- * Coordinates are normalized to a 400 by 300 workspace,
- * which is scaled to the screen size by Jetpack Compose.
+ * Maps a repair target to the face that SERVICER-01 must grip to reach it.
+ * This policy is shared by the panel and ViewModel to prevent UI bypass.
  */
-object SatelliteRepairGeometry {
+object RepairServiceAccessPolicy {
+    fun requiredFace(session: RoboticRepairSession, hotspot: RepairHotspot? = null): SatelliteServiceFace = when (
+        hotspot ?: when (session.step) {
+            RepairProcedureStep.CHOOSE_METHOD, RepairProcedureStep.REMOVE_PART,
+            RepairProcedureStep.INSTALL_REPLACEMENT, RepairProcedureStep.REPAIR_IN_PLACE -> session.target
+            else -> RepairHotspot.DIAGNOSTIC_PORT
+        }
+    ) {
+        RepairHotspot.SOLAR_PANEL_A, RepairHotspot.SOLAR_MOUNT_A -> SatelliteServiceFace.PORT
+        RepairHotspot.SOLAR_PANEL_B, RepairHotspot.SOLAR_MOUNT_B -> SatelliteServiceFace.STARBOARD
+        RepairHotspot.COMMUNICATIONS_DISH, RepairHotspot.DISH_MOUNT -> SatelliteServiceFace.DORSAL
+        else -> SatelliteServiceFace.SERVICE
+    }
 
+    fun canAccess(session: RoboticRepairSession, face: SatelliteServiceFace, hotspot: RepairHotspot? = null) =
+        face == requiredFace(session, hotspot)
+
+    fun label(hotspot: RepairHotspot): String = when (hotspot) {
+        RepairHotspot.SOLAR_PANEL_A -> "Scan Solar A (Port)"
+        RepairHotspot.SOLAR_PANEL_B -> "Scan Solar B (Starboard)"
+        RepairHotspot.SOLAR_MOUNT_A, RepairHotspot.SOLAR_MOUNT_B -> "Empty solar mount"
+        RepairHotspot.COMMUNICATIONS_DISH -> "Communications dish (Top)"
+        RepairHotspot.DISH_MOUNT -> "Dish attachment ring"
+        RepairHotspot.PAYLOAD_SENSOR, RepairHotspot.PAYLOAD_SOCKET -> "Payload sensor"
+        RepairHotspot.THERMAL_CONTROLLER, RepairHotspot.THERMAL_SOCKET -> "Thermal controller"
+        RepairHotspot.DIAGNOSTIC_PORT -> "Diagnostic port (Service)"
+        RepairHotspot.ACCESS_PANEL -> "Service panel"
+        RepairHotspot.COMPONENT, RepairHotspot.COMPONENT_SOCKET -> "Component"
+        else -> "Fastener ${hotspot.name.removePrefix("SCREW_")}"
+    }
+}
+
+/** Legacy flat-layout touch coordinates kept for older tests/screens. */
+object SatelliteRepairGeometry {
     const val WIDTH = 400f
     const val HEIGHT = 300f
-
     val screwLocations = mapOf(
         RepairHotspot.SCREW_1 to Pair(151f, 104f),
         RepairHotspot.SCREW_2 to Pair(249f, 104f),
@@ -633,67 +353,13 @@ object SatelliteRepairGeometry {
         RepairHotspot.SCREW_4 to Pair(249f, 222f)
     )
 
-    /**
-     * Identifies which service component the operator
-     * touched on the displayed satellite.
-     */
-    fun hitTest(
-        x: Float,
-        y: Float,
-        session: RoboticRepairSession
-    ): RepairHotspot? {
-
-        if (
-            kotlin.math.hypot(
-                x - 343f,
-                y - 43f
-            ) <= 27f
-        ) {
-            return RepairHotspot.DIAGNOSTIC_PORT
-        }
-
+    fun hitTest(x: Float, y: Float, session: RoboticRepairSession): RepairHotspot? {
         for ((screw, position) in screwLocations) {
-
-            if (
-                kotlin.math.hypot(
-                    x - position.first,
-                    y - position.second
-                ) <= 20f
-            ) {
-                return screw
-            }
+            if (kotlin.math.hypot(x - position.first, y - position.second) <= 20f) return screw
         }
-
-        if (session.panelOpen) {
-
-            if (
-                x in 171f..229f &&
-                y in 129f..200f
-            ) {
-                return if (
-                    session.partCondition ==
-                    RepairPartCondition.REMOVED
-                ) {
-                    RepairHotspot.COMPONENT_SOCKET
-                } else {
-                    RepairHotspot.COMPONENT
-                }
-            }
-
-            if (
-                x in 277f..380f &&
-                y in 94f..230f
-            ) {
-                return RepairHotspot.ACCESS_PANEL
-            }
-
-        } else if (
-            x in 141f..259f &&
-            y in 94f..233f
-        ) {
-            return RepairHotspot.ACCESS_PANEL
-        }
-
+        if (session.panelOpen && x in 171f..229f && y in 129f..200f) return session.target
+        if (x in 141f..259f && y in 94f..233f) return RepairHotspot.ACCESS_PANEL
+        if (kotlin.math.hypot(x - 343f, y - 43f) <= 27f) return RepairHotspot.DIAGNOSTIC_PORT
         return null
     }
 }

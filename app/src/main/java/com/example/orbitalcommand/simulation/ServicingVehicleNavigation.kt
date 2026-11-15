@@ -1,4 +1,3 @@
-
 package com.example.orbitalcommand.simulation
 
 import com.example.orbitalcommand.model.OrbitalDisplayGeometry
@@ -36,6 +35,14 @@ object ServicingVehicleNavigation {
      * and servicing vehicle in normalized display units.
      */
     const val FORMATION_SEPARATION = 0.065f
+
+    /**
+     * Small schematic spacing so two physically attached icons
+     * remain distinguishable on the orbital map.
+     *
+     * This is a display offset, NOT actual separation in space.
+     */
+    const val ATTACHED_ICON_SEPARATION = 0.024f
 
     private const val FORMATION_TOLERANCE = 0.006f
     private const val DOCK_TOLERANCE = 0.025f
@@ -124,6 +131,55 @@ object ServicingVehicleNavigation {
             radiusFraction = radius
         )
     }
+
+    /**
+     * Returns the attached vehicle's schematic position using
+     * the target's ONBOARD orbital angle, not received telemetry.
+     *
+     * During downlink loss, SatelliteState.telemetry remains at
+     * its last received angle while onboardTelemetry continues
+     * advancing each simulation second. As a result, the
+     * satellite's displayed marker freezes, but a rail-gripped
+     * servicer can continue along the predicted physical orbit.
+     *
+     * A small trailing offset separates the two marker icons.
+     */
+    fun attachedPosition(target: SatelliteState): VehiclePosition {
+
+        val radius = target.definition.orbitRadiusFraction
+
+        require(radius > ATTACHED_ICON_SEPARATION / 2f) {
+            "Target orbit is too small for an attached display marker."
+        }
+
+        val halfAngle = asin(
+            (ATTACHED_ICON_SEPARATION / (2f * radius)).toDouble()
+        )
+
+        val angleOffset = Math.toDegrees(
+            2.0 * halfAngle
+        ).toFloat()
+
+        return OrbitalDisplayGeometry.onOrbit(
+            angleDegrees =
+                target.onboardTelemetry.orbitAngleDegrees - angleOffset,
+            radiusFraction = radius
+        )
+    }
+
+    /**
+     * True only when the current assignment has a confirmed
+     * satellite rail grip; a formation state alone is insufficient.
+     */
+    private fun isAttachedAssignment(
+        vehicle: ServicingVehicleState,
+        target: SatelliteState?,
+        attachedToTarget: Boolean
+    ): Boolean =
+        attachedToTarget &&
+            target != null &&
+            vehicle.targetSatelliteId == target.definition.id &&
+            vehicle.workOrderId != null
 
     /**
      * Deploys the vehicle near the servicing station.
@@ -284,15 +340,25 @@ object ServicingVehicleNavigation {
      * received orbital angle. This causes the satellite
      * and servicer to orbit together.
      *
-     * Unavailable telemetry suspends automatic guidance
-     * without using stale position data.
+     * Undocked vehicles hold their last position when telemetry
+     * disappears. A confirmed rail-gripped vehicle instead
+     * remains attached and advances with the satellite's
+     * continuously simulated onboard orbit. Commands are still
+     * suspended until received telemetry is current again.
      */
     fun advance(
         vehicle: ServicingVehicleState,
         station: ServicingStation,
         target: SatelliteState?,
-        atSecond: Int
+        atSecond: Int,
+        attachedToTarget: Boolean = false
     ): ServicingVehicleState {
+
+        val physicallyAttached = isAttachedAssignment(
+            vehicle = vehicle,
+            target = target,
+            attachedToTarget = attachedToTarget
+        )
 
         val stationPosition =
             OrbitalDisplayGeometry.onOrbit(
@@ -309,10 +375,43 @@ object ServicingVehicleNavigation {
                 )
             }
 
-            ServicingVehiclePhase.DEPLOYED,
+            ServicingVehiclePhase.DEPLOYED -> {
+                vehicle
+            }
+
             ServicingVehiclePhase.HOLDING -> {
 
-                vehicle
+                // An attached robot is carried with the satellite
+                // even while its ground communications are down.
+                // Only TELEMETRY_UNAVAILABLE can automatically
+                // resume to FORMATION_FOLLOWING on recovery.
+                if (
+                    physicallyAttached &&
+                    vehicle.holdReason ==
+                        VehicleHoldReason.TELEMETRY_UNAVAILABLE
+                ) {
+
+                    val spacecraft = requireNotNull(target)
+                    val recovered = hasCurrentTargetTelemetry(
+                        spacecraft,
+                        atSecond
+                    )
+
+                    vehicle.copy(
+                        position = attachedPosition(spacecraft),
+                        phase = if (recovered)
+                            ServicingVehiclePhase.FORMATION_FOLLOWING
+                        else
+                            ServicingVehiclePhase.HOLDING,
+                        holdReason = if (recovered)
+                            null
+                        else
+                            VehicleHoldReason.TELEMETRY_UNAVAILABLE
+                    )
+                } else {
+                    // Preserve existing undocked/operator HOLDING.
+                    vehicle
+                }
             }
 
             ServicingVehiclePhase.APPROACHING -> {
@@ -378,7 +477,27 @@ object ServicingVehicleNavigation {
 
             ServicingVehiclePhase.FORMATION_FOLLOWING -> {
 
-                if (!isTargetTrackable(
+                if (physicallyAttached) {
+
+                    val spacecraft = requireNotNull(target)
+                    val trackable = hasCurrentTargetTelemetry(
+                        spacecraft,
+                        atSecond
+                    )
+
+                    vehicle.copy(
+                        position = attachedPosition(spacecraft),
+                        phase = if (trackable)
+                            ServicingVehiclePhase.FORMATION_FOLLOWING
+                        else
+                            ServicingVehiclePhase.HOLDING,
+                        holdReason = if (trackable)
+                            null
+                        else
+                            VehicleHoldReason.TELEMETRY_UNAVAILABLE
+                    )
+
+                } else if (!isTargetTrackable(
                         vehicle,
                         target,
                         atSecond

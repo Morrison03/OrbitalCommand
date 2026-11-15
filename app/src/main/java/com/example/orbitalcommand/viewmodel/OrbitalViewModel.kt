@@ -1,12 +1,27 @@
-
 package com.example.orbitalcommand.viewmodel
 
-import androidx.lifecycle.ViewModel
+import com.example.orbitalcommand.notifications.OrbitalNotificationCenter
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
+
+import android.app.Application
+import android.os.SystemClock
+import androidx.lifecycle.AndroidViewModel
+import com.example.orbitalcommand.persistence.OrbitalSavedState
+import com.example.orbitalcommand.persistence.OrbitalStateStore
 import androidx.lifecycle.viewModelScope
 import com.example.orbitalcommand.model.*
 import com.example.orbitalcommand.simulation.SatelliteSimulator
 import com.example.orbitalcommand.simulation.ServicingVehicleNavigation
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
+
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -22,7 +37,7 @@ import kotlinx.coroutines.launch
  * Only successful final verification completes an
  * in-formation repair work order.
  */
-class OrbitalViewModel : ViewModel() {
+class OrbitalViewModel(application: Application) : AndroidViewModel(application) {
 
     companion object {
 
@@ -36,15 +51,79 @@ class OrbitalViewModel : ViewModel() {
             "EQUIPMENT_DAMAGE"
     }
 
+    /** App-private, atomic snapshot store for mission state. */
+    private val persistentStateStore = OrbitalStateStore(application.applicationContext)
+
+    /** Restore the previous checkpoint before any new simulation tick. */
+    private val restoredSnapshot = persistentStateStore.load()
+
     private val _uiState = MutableStateFlow(
-        createInitialState()
+        restoredSnapshot?.uiState ?: createInitialState()
     )
 
     val uiState: StateFlow<OrbitalUiState> =
         _uiState.asStateFlow()
 
+    /** Operator-controlled pause persists even after force-stop/restart. */
+    private val _isSimulationPaused = MutableStateFlow(
+        restoredSnapshot?.isSimulationPaused ?: persistentStateStore.isSimulationPaused()
+    )
+
+    val isSimulationPaused: StateFlow<Boolean> =
+        _isSimulationPaused.asStateFlow()
+
+    /** Monotonic time anchor including Android device sleep. */
+    private var lastSimulationTickElapsedRealtimeMillis =
+        SystemClock.elapsedRealtime()
+
     init {
+        // Deliver satellite and mission events while this process is alive.
+        val notificationCenter = OrbitalNotificationCenter(getApplication<Application>())
+        notificationCenter.createChannels()
+        viewModelScope.launch(Dispatchers.Default) {
+            _uiState.map { it.events }.distinctUntilChanged().collect { events ->
+                notificationCenter.publishNewEvents(events)
+            }
+        }
+
+        // Repair/model state and the separate physical rail attachment must
+        // be restored together, before navigation reads either one.
+        ServicerAttachmentRegistry.clear()
+        restoredSnapshot?.attachment?.let { attachment ->
+            ServicerAttachmentRegistry.prepareMission(
+                workOrderId = attachment.workOrderId,
+                satelliteId = attachment.satelliteId
+            )
+            ServicerAttachmentRegistry.update(attachment.docking)
+        }
+
+        startMissionStatePersistence()
         startSimulation()
+    }
+
+    /**
+     * Save every changed simulator or rail-grip checkpoint on a background
+     * thread. conflate() avoids a write backlog if telemetry updates faster
+     * than the disk. NonCancellable finishes a write already in progress.
+     */
+    private fun startMissionStatePersistence() {
+        viewModelScope.launch {
+            combine(
+                _uiState,
+                ServicerAttachmentRegistry.current,
+                _isSimulationPaused
+            ) { state, attachment, paused ->
+                OrbitalSavedState(
+                    uiState = state,
+                    attachment = attachment,
+                    isSimulationPaused = paused
+                )
+            }.conflate().collect { snapshot ->
+                withContext(Dispatchers.IO + NonCancellable) {
+                    persistentStateStore.save(snapshot)
+                }
+            }
+        }
     }
 
     /**
@@ -103,48 +182,83 @@ class OrbitalViewModel : ViewModel() {
 
             while (isActive) {
 
+                // Suspend the simulation until the operator resumes it.
+                if (_isSimulationPaused.value) {
+                    _isSimulationPaused.first { paused -> !paused }
+                    lastSimulationTickElapsedRealtimeMillis =
+                        SystemClock.elapsedRealtime()
+                    continue
+                }
+
                 delay(1000L)
 
-                _uiState.update { current ->
+                // Re-check after delay so no tick runs while paused.
+                if (_isSimulationPaused.value) {
+                    lastSimulationTickElapsedRealtimeMillis =
+                        SystemClock.elapsedRealtime()
+                    continue
+                }
+
+                // Catch up after Android background suspension or deep sleep.
+                val tickNow = SystemClock.elapsedRealtime()
+                val secondsPassed = (
+                    (tickNow - lastSimulationTickElapsedRealtimeMillis) / 1000L
+                ).coerceAtLeast(0L)
+
+                if (secondsPassed == 0L) continue
+
+                // Retain sub-second fractions to prevent long-running drift.
+                lastSimulationTickElapsedRealtimeMillis +=
+                    secondsPassed * 1000L
+
+                // Catch-up can replay many offline seconds; do not block the UI thread.
+                withContext(Dispatchers.Default) {
+                    _uiState.update { current ->
+                    // Do not apply an in-flight replay after Pause is tapped.
+                    if (_isSimulationPaused.value) return@update current
 
                     val second =
-                        current.elapsedSeconds + 1
+                        (current.elapsedSeconds.toLong() + secondsPassed)
+                            .coerceAtMost(Int.MAX_VALUE.toLong())
+                            .toInt()
 
                     var events = current.events
 
-                    val satellites = current.satellites.map {
-                            satellite ->
+                    val satellites = current.satellites.map { satellite ->
+                        // Live clock and simulation telemetry are related but
+                        // may be out of sync after restoring an offline mission.
+                        // The simulator requires an exact ONE-SECOND interval.
+                        var onboard = satellite.onboardTelemetry
+                        while (onboard.sampleSecond < second) {
+                            // Discard partial catch-up if the operator pauses.
+                            if (_isSimulationPaused.value) return@update current
+                            val nextSecond = onboard.sampleSecond + 1
+                            val previousMode = onboard.powerMode
 
-                        val previousMode =
-                            satellite.onboardTelemetry.powerMode
-
-                        val onboard =
-                            SatelliteSimulator.advance(
-                                previous =
-                                    satellite.onboardTelemetry,
-                                second = second,
+                            onboard = SatelliteSimulator.advance(
+                                previous = onboard,
+                                second = nextSecond,
                                 satellite = satellite.definition,
                                 fault = satellite.fault,
-                                faultStartedSecond =
-                                    satellite.faultStartedSecond,
-                                equipmentDamage =
-                                    satellite.equipmentDamage,
+                                faultStartedSecond = satellite.faultStartedSecond,
+                                equipmentDamage = satellite.equipmentDamage,
                                 equipmentDamageStartedSecond =
                                     satellite.equipmentDamageStartedSecond
                             )
 
-                        events = updatePowerEvents(
-                            history = events,
-                            satelliteId = satellite.definition.id,
-                            previousMode = previousMode,
-                            currentMode = onboard.powerMode,
-                            atSecond = second
-                        )
+                            if (onboard.powerMode != previousMode) {
+                                events = updatePowerEvents(
+                                    history = events,
+                                    satelliteId = satellite.definition.id,
+                                    previousMode = previousMode,
+                                    currentMode = onboard.powerMode,
+                                    atSecond = nextSecond
+                                )
+                            }
+                        }
 
                         withReceivedTelemetry(
-                            satellite.copy(
-                                onboardTelemetry = onboard
-                            ),
+                            satellite.copy(onboardTelemetry = onboard),
                             onboard
                         )
                     }
@@ -160,12 +274,22 @@ class OrbitalViewModel : ViewModel() {
                                 previous.targetSatelliteId
                     }
 
+                    // Physical rail attachment is independent of
+                    // downlink availability and the vehicle HOLD phase.
+                    val grip = ServicerAttachmentRegistry.current.value
+                    val attachedToTarget =
+                        grip?.isRailGripped == true &&
+                        grip.workOrderId == previous.workOrderId &&
+                        grip.satelliteId == previous.targetSatelliteId &&
+                        grip.satelliteId == target?.definition?.id
+
                     val vehicle =
                         ServicingVehicleNavigation.advance(
                             vehicle = previous,
                             station = station,
                             target = target,
-                            atSecond = second
+                            atSecond = second,
+                            attachedToTarget = attachedToTarget
                         )
 
                     val established =
@@ -213,13 +337,43 @@ class OrbitalViewModel : ViewModel() {
                                 vehicle.targetSatelliteId
                                     ?: "FLEET",
                             atSecond = second,
-                            title = "Vehicle tracking suspended",
-                            description =
+                            title = if (attachedToTarget)
+                                "Attached servicer guidance suspended"
+                            else
+                                "Vehicle tracking suspended",
+                            description = if (attachedToTarget)
+                                "Target telemetry unavailable. Rail grip " +
+                                    "retained; SERVICER-01 follows the " +
+                                    "simulated target orbit. Repair locked."
+                            else
                                 "Target telemetry is unavailable. " +
-                                        "Robotic servicing controls " +
-                                        "are locked.",
+                                    "Robotic servicing controls are locked.",
                             severity =
                                 MissionEventSeverity.WARNING,
+                            kind = MissionEventKind.ACTIVITY
+                        )
+                    }
+
+                    // Only rail-gripped vehicles return to automatic
+                    // formation tracking when communications recover.
+                    val regained = attachedToTarget &&
+                        previous.phase == ServicingVehiclePhase.HOLDING &&
+                        previous.holdReason ==
+                            VehicleHoldReason.TELEMETRY_UNAVAILABLE &&
+                        vehicle.phase ==
+                            ServicingVehiclePhase.FORMATION_FOLLOWING
+
+                    if (regained) {
+                        events = appendEvent(
+                            history = events,
+                            satelliteId =
+                                vehicle.targetSatelliteId ?: "FLEET",
+                            atSecond = second,
+                            title = "Attached servicer link restored",
+                            description =
+                                "SERVICER-01 remained rail-gripped " +
+                                    "and resumed verified servicing guidance.",
+                            severity = MissionEventSeverity.INFO,
                             kind = MissionEventKind.ACTIVITY
                         )
                     }
@@ -259,10 +413,26 @@ class OrbitalViewModel : ViewModel() {
                         else
                             current.preparedMission,
                         repairSession = if (docked)
-                            null
+                            RepairProgressRetention.keepUnfinished(
+                                current.repairSession,
+                                current.repairOrders
+                            )
                         else
                             current.repairSession
                     )
+                }
+                }
+
+                // ViewModel owns cleanup even if the repair panel
+                // is not currently being displayed.
+                val latest = _uiState.value
+                if (
+                    latest.servicingVehicle.phase ==
+                        ServicingVehiclePhase.DOCKED &&
+                    latest.preparedMission == null &&
+                    ServicerAttachmentRegistry.current.value != null
+                ) {
+                    ServicerAttachmentRegistry.clear()
                 }
             }
         }
@@ -583,7 +753,25 @@ class OrbitalViewModel : ViewModel() {
 
             current.copy(
                 preparedMission = plan,
+                repairSession = RepairProgressRetention.forOrder(
+                    current.repairSession,
+                    order
+                ),
                 events = events
+            )
+        }
+
+        // Initialize shared attachment state for the prepared
+        // mission outside the atomic StateFlow update lambda.
+        val activePlan = _uiState.value.preparedMission
+        if (
+            activePlan?.workOrderId == orderId &&
+            _uiState.value.servicingVehicle.phase ==
+                ServicingVehiclePhase.DOCKED
+        ) {
+            ServicerAttachmentRegistry.prepareMission(
+                workOrderId = activePlan.workOrderId,
+                satelliteId = activePlan.targetSatelliteId
             )
         }
     }
@@ -616,9 +804,20 @@ class OrbitalViewModel : ViewModel() {
 
             current.copy(
                 preparedMission = null,
-                repairSession = null,
+                repairSession = RepairProgressRetention.keepUnfinished(
+                    current.repairSession,
+                    current.repairOrders
+                ),
                 events = events
             )
+        }
+
+        if (
+            _uiState.value.preparedMission == null &&
+            _uiState.value.servicingVehicle.phase ==
+                ServicingVehiclePhase.DOCKED
+        ) {
+            ServicerAttachmentRegistry.clear()
         }
     }
 
@@ -867,6 +1066,15 @@ class OrbitalViewModel : ViewModel() {
                 events = events
             )
         }
+
+        // An explicit return command releases the satellite
+        // rail; loss of telemetry alone never calls release.
+        val returning = _uiState.value.servicingVehicle
+        if (returning.phase == ServicingVehiclePhase.RETURNING) {
+            returning.workOrderId?.let { workOrderId ->
+                ServicerAttachmentRegistry.release(workOrderId)
+            }
+        }
     }
 
     /**
@@ -888,8 +1096,14 @@ class OrbitalViewModel : ViewModel() {
             it.id == session.workOrderId
         } ?: return false
 
-        return session.satelliteId ==
-                order.satelliteId &&
+        val physicalAttachment = ServicerAttachmentRegistry.current.value
+        val grippingMission = physicalAttachment?.workOrderId == order.id &&
+                physicalAttachment.satelliteId == order.satelliteId &&
+                physicalAttachment.docking.phase == ServicerDockPhase.GRIPPED &&
+                !physicalAttachment.docking.choosingFace
+
+        return grippingMission &&
+                session.satelliteId == order.satelliteId &&
                 session.damage == order.damage &&
                 state.preparedMission?.workOrderId == order.id &&
                 RepairCompletionPolicy.evaluate(
@@ -927,8 +1141,15 @@ class OrbitalViewModel : ViewModel() {
                 return@update current
             }
 
-            val session =
-                RoboticRepairSimulator.start(order)
+            // Enforce physical rail attachment in the ViewModel, not only UI.
+            val grip = ServicerAttachmentRegistry.current.value
+            if (grip?.workOrderId != order.id ||
+                grip.satelliteId != order.satelliteId ||
+                grip.docking.phase != ServicerDockPhase.GRIPPED) {
+                return@update current
+            }
+
+            val session = RoboticRepairSimulator.start(order)
 
             val events = appendEvent(
                 history = current.events,
@@ -991,6 +1212,11 @@ class OrbitalViewModel : ViewModel() {
             val session = current.repairSession
                 ?: return@update current
 
+            val face = ServicerAttachmentRegistry.current.value?.docking?.activeFace
+            if (face == null || !RepairServiceAccessPolicy.canAccess(session, face)) {
+                return@update current
+            }
+
             val result =
                 RoboticRepairSimulator.chooseMethod(
                     session,
@@ -1024,6 +1250,11 @@ class OrbitalViewModel : ViewModel() {
 
             val session = current.repairSession
                 ?: return@update current
+
+            val face = ServicerAttachmentRegistry.current.value?.docking?.activeFace
+            if (face == null || !RepairServiceAccessPolicy.canAccess(session, face, hotspot)) {
+                return@update current
+            }
 
             val result =
                 RoboticRepairSimulator.interact(
@@ -1432,6 +1663,7 @@ class OrbitalViewModel : ViewModel() {
             MissionEventSeverity.CRITICAL
 
         EquipmentDamage.SOLAR_ARRAY_DAMAGE,
+        EquipmentDamage.COMMUNICATIONS_DISH_DAMAGE,
         EquipmentDamage.THERMAL_RADIATOR_DAMAGE ->
             MissionEventSeverity.WARNING
 
@@ -1475,11 +1707,30 @@ class OrbitalViewModel : ViewModel() {
     }
 
     /**
+     * Pauses or resumes the complete simulation, including the offline clock.
+     * The preference is committed immediately so a quick app close won't
+     * accidentally resume the live timer at the next startup.
+     *
+     * Resetting the mission does not implicitly resume a paused simulation.
+     */
+    fun toggleSimulationPaused() {
+        val paused = !_isSimulationPaused.value
+        if (!persistentStateStore.persistSimulationPaused(paused)) return
+        lastSimulationTickElapsedRealtimeMillis = SystemClock.elapsedRealtime()
+        _isSimulationPaused.value = paused
+    }
+
+    /**
      * Resets satellites, maintenance records,
      * servicing station, vehicle, and repair model.
      */
     fun resetSimulation() {
 
+        // Do not carry a pending background interval across a reset.
+        lastSimulationTickElapsedRealtimeMillis = SystemClock.elapsedRealtime()
+
+        ServicerAttachmentRegistry.clear()
+        ServicerAttachmentRegistry.clear()
         _uiState.value = createInitialState()
     }
 }

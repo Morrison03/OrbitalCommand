@@ -19,3 +19,6 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+# Orbital Command persistent model state: preserve names for Gson snapshots.
+-keep class com.example.orbitalcommand.model.** { *; }
+-keep class com.example.orbitalcommand.persistence.OrbitalSavedState { *; }

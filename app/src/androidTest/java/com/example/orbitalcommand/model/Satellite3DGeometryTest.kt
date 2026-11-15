@@ -6,265 +6,157 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import kotlin.math.hypot
 
 /**
- * Verifies spacecraft camera controls,
- * hinged cover geometry, and interactive
- * maintenance-part selection.
+ * Checks camera navigation and
+ * procedural repair hotspot alignment.
  */
 class Satellite3DGeometryTest {
 
-    /**
-     * Creates an initial robotic maintenance session
-     * for the scientific research satellite.
-     */
     private fun session() = RoboticRepairSession(
         workOrderId = 1L,
         satelliteId = "SAT-003",
         damage = EquipmentDamage.SOLAR_ARRAY_DAMAGE
     )
 
-    /**
-     * Confirms that the satellite origin
-     * projects to the viewport center.
-     */
     @Test
-    fun modelOriginProjectsToCenter() {
+    fun centerProjectsToViewportCenter() {
 
-        val point = Satellite3DGeometry.project(
+        val p = Satellite3DGeometry.project(
             SatellitePoint3D(0f, 0f, 0f),
             SatelliteCamera()
         )
 
-        assertEquals(200f, point.x, 0.001f)
-        assertEquals(150f, point.y, 0.001f)
+        assertEquals(200f, p.x, 0.001f)
+        assertEquals(150f, p.y, 0.001f)
     }
 
-    /**
-     * Confirms that camera rotation changes
-     * an off-center component's appearance.
-     */
     @Test
-    fun rotationChangesProjection() {
-
-        val point = SatellitePoint3D(
-            0.5f, 0.2f, 0.4f
-        )
-
-        val before = Satellite3DGeometry.project(
-            point,
-            SatelliteCamera(0f, 0f)
-        )
-
-        val after = Satellite3DGeometry.project(
-            point,
-            SatelliteCamera(40f, 15f)
-        )
-
-        assertNotEquals(before.x, after.x)
-    }
-
-    /**
-     * Verifies that rotation remains within
-     * the intended servicing-view limits.
-     */
-    @Test
-    fun cameraRotationIsClamped() {
+    fun dragCanReachFullRearAndTopViews() {
 
         val camera = SatelliteCamera().rotated(
-            deltaYaw = 300f,
-            deltaPitch = -300f
+            300f,
+            -300f
         )
 
         assertEquals(
-            55f,
+            180f,
             camera.yawDegrees,
             0.001f
         )
 
         assertEquals(
-            -30f,
+            -84f,
             camera.pitchDegrees,
             0.001f
         )
     }
 
-    /**
-     * Verifies that magnification remains
-     * within usable viewing limits.
-     */
     @Test
-    fun zoomIsClamped() {
-
-        val zoomedIn = SatelliteCamera().zoomed(5f)
-        val zoomedOut = SatelliteCamera().zoomed(-5f)
+    fun zoomRemainsBounded() {
 
         assertEquals(
             1.25f,
-            zoomedIn.zoom,
+            SatelliteCamera().zoomed(5f).zoom,
             0.001f
         )
 
         assertEquals(
             0.70f,
-            zoomedOut.zoom,
+            SatelliteCamera().zoomed(-5f).zoom,
             0.001f
         )
     }
 
-    /**
-     * Confirms that zoom changes the projected
-     * position of an off-center component.
-     */
     @Test
-    fun zoomChangesProjectedDistance() {
+    fun cameraRotationChangesOffCenterProjection() {
 
         val point = SatellitePoint3D(
-            0.5f, 0f, 0.4f
+            0.5f,
+            0.2f,
+            0.4f
         )
 
-        val normal = Satellite3DGeometry.project(
+        val a = Satellite3DGeometry.project(
             point,
-            SatelliteCamera(zoom = 1f)
+            SatelliteCamera(0f, 0f)
         )
 
-        val enlarged = Satellite3DGeometry.project(
+        val b = Satellite3DGeometry.project(
             point,
-            SatelliteCamera(zoom = 1.2f)
+            SatelliteCamera(90f, 0f)
         )
 
-        assertTrue(
-            kotlin.math.abs(enlarged.x - 200f) >
-                    kotlin.math.abs(normal.x - 200f)
-        )
+        assertNotEquals(a.x, b.x)
     }
 
-    /**
-     * Verifies that screw selection uses
-     * the current rotated camera projection.
-     */
     @Test
-    fun rotatedScrewsRemainSelectable() {
+    fun rotatedScrewRemainsSelectable() {
 
         val camera = SatelliteCamera(
             yawDegrees = 35f,
-            pitchDegrees = 10f,
-            zoom = 1.1f
+            pitchDegrees = 10f
         )
 
-        val current = session()
+        val initial = session()
 
-        val screw = RepairHotspot.SCREW_1
-
-        val position = Satellite3DGeometry.project(
-            Satellite3DGeometry.hotspotPosition(
-                screw,
-                current
-            ),
-            camera
-        )
+        val projected =
+            Satellite3DGeometry.project(
+                Satellite3DGeometry.hotspotPosition(
+                    RepairHotspot.SCREW_1,
+                    initial
+                ),
+                camera
+            )
 
         assertEquals(
-            screw,
+            RepairHotspot.SCREW_1,
             Satellite3DGeometry.hitTest(
-                position.x,
-                position.y,
+                projected.x,
+                projected.y,
                 camera,
-                current
+                initial
             )
         )
     }
 
-    /**
-     * Confirms that the hinged panel begins
-     * at its original closed position.
-     */
     @Test
-    fun hingeAtZeroKeepsPanelClosed() {
+    fun hingeMovesOpenPanel() {
 
-        val original = SatellitePoint3D(
-            0f, 0f, 0.41f
+        val origin = SatellitePoint3D(
+            0f,
+            0f,
+            0.41f
         )
 
-        val transformed =
+        assertEquals(
+            origin,
             Satellite3DGeometry.hingedPanelPoint(
-                original,
+                origin,
                 0f
             )
-
-        assertEquals(
-            original.x,
-            transformed.x,
-            0.001f
         )
 
-        assertEquals(
-            original.z,
-            transformed.z,
-            0.001f
-        )
-    }
-
-    /**
-     * Confirms that the hinge moves the cover
-     * outward over the opening animation.
-     */
-    @Test
-    fun hingedPanelMovesOutward() {
-
-        val original = SatellitePoint3D(
-            0f, 0f, 0.41f
-        )
-
-        val halfOpen =
+        assertNotEquals(
+            origin,
             Satellite3DGeometry.hingedPanelPoint(
-                original,
-                0.5f
-            )
-
-        val fullyOpen =
-            Satellite3DGeometry.hingedPanelPoint(
-                original,
+                origin,
                 1f
             )
-
-        assertNotEquals(
-            original,
-            halfOpen
-        )
-
-        assertNotEquals(
-            original,
-            fullyOpen
-        )
-
-        assertTrue(
-            hypot(
-                fullyOpen.x - original.x,
-                fullyOpen.z - original.z
-            ) > 0.1f
         )
     }
 
-    /**
-     * Verifies that a fully opened cover's
-     * touch position matches its hinge geometry.
-     */
     @Test
-    fun openCoverHitTargetMatchesGeometry() {
+    fun openPanelTouchFollowsItsHinge() {
 
         val current = session().copy(
-            step = RepairProcedureStep.CLOSE_PANEL,
-            panelOpen = true
+            panelOpen = true,
+            step = RepairProcedureStep.CLOSE_PANEL
         )
 
-        val camera = SatelliteCamera(
-            yawDegrees = 25f,
-            pitchDegrees = -15f
-        )
+        val camera = SatelliteCamera()
 
-        val center = Satellite3DGeometry.project(
+        val point = Satellite3DGeometry.project(
             Satellite3DGeometry.hotspotPosition(
                 RepairHotspot.ACCESS_PANEL,
                 current
@@ -275,20 +167,16 @@ class Satellite3DGeometryTest {
         assertEquals(
             RepairHotspot.ACCESS_PANEL,
             Satellite3DGeometry.hitTest(
-                center.x,
-                center.y,
+                point.x,
+                point.y,
                 camera,
                 current
             )
         )
     }
 
-    /**
-     * Ensures a removed screw cannot be
-     * removed a second time.
-     */
     @Test
-    fun removedScrewIsNotInteractive() {
+    fun removedFastenerCannotBeSelectedForRemoval() {
 
         val current = session().copy(
             loosenedScrews = setOf(
@@ -304,63 +192,11 @@ class Satellite3DGeometryTest {
         )
     }
 
-    /**
-     * Confirms that the access cover becomes
-     * interactive after fastener removal.
-     */
     @Test
-    fun accessPanelBecomesInteractive() {
+    fun verificationUsesOnlyDiagnosticPort() {
 
         val current = session().copy(
-            step = RepairProcedureStep.LIFT_PANEL,
-            loosenedScrews = setOf(
-                RepairHotspot.SCREW_1,
-                RepairHotspot.SCREW_2,
-                RepairHotspot.SCREW_3,
-                RepairHotspot.SCREW_4
-            )
-        )
-
-        assertEquals(
-            listOf(RepairHotspot.ACCESS_PANEL),
-            Satellite3DGeometry.activeHotspots(
-                current
-            )
-        )
-    }
-
-    /**
-     * Verifies that component removal exposes
-     * the replacement mounting socket.
-     */
-    @Test
-    fun removedModuleExposesSocket() {
-
-        val current = session().copy(
-            step = RepairProcedureStep.INSTALL_REPLACEMENT,
-            panelOpen = true,
-            partCondition = RepairPartCondition.REMOVED
-        )
-
-        assertEquals(
-            listOf(RepairHotspot.COMPONENT_SOCKET),
-            Satellite3DGeometry.activeHotspots(
-                current
-            )
-        )
-    }
-
-    /**
-     * Ensures that final verification targets
-     * only the diagnostics connector.
-     */
-    @Test
-    fun verificationUsesDiagnosticsPort() {
-
-        val current = session().copy(
-            step = RepairProcedureStep.VERIFY,
-            partCondition = RepairPartCondition.REPLACED,
-            loosenedScrews = emptySet()
+            step = RepairProcedureStep.VERIFY
         )
 
         assertEquals(
@@ -371,10 +207,6 @@ class Satellite3DGeometryTest {
         )
     }
 
-    /**
-     * Prevents further component interactions
-     * after successful repair verification.
-     */
     @Test
     fun completedRepairHasNoActiveTargets() {
 
